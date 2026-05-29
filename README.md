@@ -265,19 +265,30 @@ Roles aren't tied to specific Claude instances — any agent can take on any rol
 
 ## File Conventions
 
-Every repo (across every domain) follows the same conventions for non-code artifacts:
+Every repo (across every domain) follows the same layout for non-code artifacts:
 
 ```
 <repo>/
-├── CLAUDE.md             # Domain context + multi-agent conventions (boilerplate below)
-├── STATUS.md             # Running notebook of where things stand
+├── README.md            # Orientation: what this repo is, layout, doc pointers (humans first)
+├── CLAUDE.md            # Agent behavior conventions for this repo
+├── STATUS.md            # Handoff: what just happened + what's next + where to find things
 ├── docs/
-│   ├── analysis/         # Planner outputs: <YYYY-MM-DD-topic>.md
-│   ├── plans/            # Coordinator outputs: <topic>.md
-│   ├── decisions/        # ADRs: <NNNN-title>.md
-│   └── runbooks/         # Operational procedures
+│   ├── analysis/        # Planner outputs: <YYYY-MM-DD-topic>.md
+│   ├── plans/           # Coordinator outputs: <topic>.md
+│   ├── decisions/       # ADRs: <NNNN-title>.md
+│   └── runbooks/        # Operational procedures
 └── (code / data / whatever)
 ```
+
+### Three-role doc separation
+
+| Doc | Audience | What it answers | Volatility |
+|---|---|---|---|
+| **README.md** | Humans landing on the repo (GitHub web, fresh clone, future-you) | What is this? Who is it for? Where do the other docs live? | Low — stable framing |
+| **CLAUDE.md** | Claude agents in this repo | How should agents behave here? What conventions apply? | Low/medium — stable instructions |
+| **STATUS.md** | Next session / next agent | Where are we right now? What handoff signals? What's next? | High — updated every session |
+
+They cover orthogonal concerns: orientation (README), behavior (CLAUDE), state (STATUS). Don't conflate them — when STATUS keeps growing past a screen, the parts that aren't volatile probably belong in README.
 
 ### Commit message prefixes
 
@@ -291,16 +302,60 @@ Lightweight semantic tags so subsequent agents can scan history quickly:
 | `status:` | STATUS.md update only |
 | `feat:`, `fix:`, `docs:`, `refactor:`, `chore:` | Standard conventional commits for code |
 
-### STATUS.md ritual
+### STATUS.md template
 
-At the end of every working session, the agent updates `STATUS.md` describing:
+Three sections, all forward-pointing — no rolling history (git is the history):
 
-- What just changed (1–3 bullets)
-- Where things stand right now
-- Open questions or next steps
-- Any handoff signals for the next agent
+```markdown
+# STATUS — <repo>
 
-The next agent reads `STATUS.md` first. This is the cheap version of agent memory — durable in git, human-readable, no special tooling.
+**Last updated:** YYYY-MM-DD
+
+## What just happened
+(1–3 bullets from this session only)
+
+## What's next
+(1–3 concrete next actions, each linking to an issue or doc)
+
+## Where to find things
+(Pointers: functions/layout → README; active work → epic; design history → docs/decisions/; etc.)
+```
+
+The next agent reads STATUS first. README explains what the repo *is*; STATUS explains where the work *is*. They complement each other.
+
+### README.md template
+
+For a hub repo (one whose function generates ongoing build work — a planning/pipeline repo, a tooling repo, etc.):
+
+```markdown
+# <repo>
+
+(One-sentence mission. Link to the substrate it operates on if external.)
+
+## Functions
+
+| Function | Label | What it builds |
+|---|---|---|
+| (3–5 functions max; "what am I building that leverages the substrate") |
+
+## Layout
+
+(Table of paths → contents. Pointer-heavy, no prose.)
+
+## See also
+
+- CLAUDE.md — agent conventions
+- STATUS.md — current state
+- (other guides, related repos, external boards)
+
+## Out of scope
+
+(Explicit non-scope items so they aren't filed accidentally.)
+```
+
+For a leaf repo (work happens here but no ongoing build queue — a domain repo like `home` or `ifl`): drop the Functions section, keep mission + layout + see-also.
+
+The function model: ask "what am I building that leverages the substrate?" Not "what work happens here." Outputs (reports, board state, planning artifacts) are downstream consumption — they don't track as functions of the repo.
 
 ## GitHub Projects as Task Substrate
 
