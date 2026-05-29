@@ -314,6 +314,10 @@ Three sections, all forward-pointing — no rolling history (git is the history)
 ## What just happened
 (1–3 bullets from this session only)
 
+## What's in progress
+(Issues currently claimed by an active session — see Concurrency & Claiming.
+ Format: `- #N — <brief> (claimed YYYY-MM-DD by session <name>)`)
+
 ## What's next
 (1–3 concrete next actions, each linking to an issue or doc)
 
@@ -321,7 +325,7 @@ Three sections, all forward-pointing — no rolling history (git is the history)
 (Pointers: functions/layout → README; active work → epic; design history → docs/decisions/; etc.)
 ```
 
-The next agent reads STATUS first. README explains what the repo *is*; STATUS explains where the work *is*. They complement each other.
+The next agent reads STATUS first. README explains what the repo *is*; STATUS explains where the work *is* and what's *currently claimed*. They complement each other.
 
 ### README.md template
 
@@ -431,6 +435,47 @@ The copy inherits fields, views, and field options. Items don't copy — the new
 - Leave Priority, Type, Effort, Start/End as-is
 
 This pattern saves significant manual configuration and ensures consistency across boards.
+
+## Concurrency & Claiming
+
+Multiple agents reading the same backlog (parallel local sessions, autonomous workers, scheduled jobs) need a way to avoid picking up the same work. The architecture uses a **two-layer claim** that reuses what's already there — no new fields, no bot accounts.
+
+**Layer 1 — Lock signal (board Status):**
+
+The agent's first action when starting work on an issue is to flip the board Status from `ToDo` → `In Progress` via `updateProjectV2ItemFieldValue`. Other agents read Status before claiming and skip anything not in `ToDo`. This is the queryable, board-visible lock.
+
+**Layer 2 — Traceability (STATUS.md):**
+
+The session adds the issue to its repo's `STATUS.md` under a "What's in progress" section, then commits the update with the `status:` prefix. Other sessions `git pull` and read STATUS.md (the first-read convention) and see what's claimed in human-readable form.
+
+```markdown
+## What's in progress
+
+- #176 — /theme-operator Audit-Reconcile (claimed 2026-05-28 by session `substrate`)
+- #180 — issue-reviewer PR-title citations (claimed 2026-05-28 by session `accounting`)
+```
+
+When the work lands (PR merged, issue closed), the session moves the entry from "What's in progress" to "What just happened" and commits.
+
+**Claim flow:**
+
+```
+1. git pull (fresh STATUS.md)
+2. Read STATUS.md "What's in progress" — see what other sessions are doing
+3. Pick an issue from "What's next" (or planning's open queue)
+4. Re-check the board Status — confirm still ToDo
+5. Flip Status → In Progress
+6. Update STATUS.md "What's in progress" with the issue ref + session name
+7. Commit STATUS.md ("status: claim #N for <work>"), push
+8. Do the work
+9. When done: remove from "In progress", add to "What just happened", commit, push
+```
+
+**Stale claims:** if an agent dies mid-task, Status stays at `In Progress` with no PR landing. The simplest recovery is a periodic board-hygiene pass (e.g., `/project-sync` in QSI's pipeline) that surfaces stuck items and offers to revert them. Threshold is workload-dependent.
+
+**Race window:** the gap between read and write is tiny and accepted. At handful-of-agents scale this is acceptable noise — the cost of strict locking (a distributed lock service, optimistic concurrency tokens) outweighs the cost of an occasional double-claim. Add stricter coordination only if it becomes a real problem.
+
+**What's not covered here:** file-level conflicts (two agents editing the same file) — out of scope for this design; git handles it via merge conflicts.
 
 ## Working Patterns
 
