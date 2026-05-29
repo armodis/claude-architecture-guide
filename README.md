@@ -319,7 +319,8 @@ Three sections, all forward-pointing — no rolling history (git is the history)
  Format: `- #N — <brief> (claimed YYYY-MM-DD by session <name>)`)
 
 ## What's next
-(1–3 concrete next actions, each linking to an issue or doc)
+(1–3 concrete next actions. Annotate each issue with `(P_, E_)` from the
+ board for quick human scanning — matches the agent selection policy.)
 
 ## Where to find things
 (Pointers: functions/layout → README; active work → epic; design history → docs/decisions/; etc.)
@@ -476,6 +477,33 @@ When the work lands (PR merged, issue closed), the session moves the entry from 
 **Race window:** the gap between read and write is tiny and accepted. At handful-of-agents scale this is acceptable noise — the cost of strict locking (a distributed lock service, optimistic concurrency tokens) outweighs the cost of an occasional double-claim. Add stricter coordination only if it becomes a real problem.
 
 **What's not covered here:** file-level conflicts (two agents editing the same file) — out of scope for this design; git handles it via merge conflicts.
+
+### Selecting work
+
+Claiming is half the answer. The other half is "which item to claim." With **Priority** (P0/P1/P2/P3) and **Effort** (1/2/3/5/8) on the board, an agent can apply a deterministic selection policy without further input.
+
+**Default sort:**
+
+1. Filter: open issues with the relevant function label (e.g., `planning:pipeline`), `Status = ToDo`, not already in any session's STATUS.md "What's in progress."
+2. Sort: `Priority ASC` (P0 → P3), then `Effort ASC` (1 → 8 within priority), then `Created ASC`.
+3. Agent takes the head.
+
+Highest urgency first; within urgency, smallest size first. Naturally clears small high-priority items before graduating to bigger ones — fast wins, low context cost.
+
+**Named modes** an operator can specify in the prompt (e.g., "work the planning queue, quick-wins mode"):
+
+| Mode | Filter on top of default | Use case |
+|---|---|---|
+| *(default)* | none — head of sorted list | "What's next" — pick the top item |
+| `quick-wins` | Priority ≤ P1 AND Effort ≤ 2 | Clear small high-priority work, multiple in one session |
+| `focused-feature` | Priority ≤ P1 AND Effort ≥ 5 | Pick one big-ticket item, commit |
+| `backlog-cleanup` | Effort ≤ 2 (any priority) | Burn down the small-item tail |
+
+**Field-completeness precondition:**
+
+The policy only works if Priority + Effort are set. Agents **skip with warning** any issues missing either field — surface them in the session summary as "needs grooming" rather than picking them. This forces field discipline upstream, where it belongs. A board-hygiene rule (e.g., `/audit-fields` in QSI's pipeline) should flag function-labeled issues missing Priority or Effort.
+
+Don't default-treat missing values (e.g., "missing → P2, E3") — it rewards leaving fields empty and corrodes the policy over time.
 
 ## Working Patterns
 
