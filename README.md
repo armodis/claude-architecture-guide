@@ -505,6 +505,35 @@ The policy only works if Priority + Effort are set. Agents **skip with warning**
 
 Don't default-treat missing values (e.g., "missing → P2, E3") — it rewards leaving fields empty and corrodes the policy over time.
 
+## Decision Review: Green/Blue Doc Escalation
+
+Agents hit decision points the conventions route to a human — an ambiguous structural call, a low-confidence classification, a borderline judgment, conflicting inputs. The default is to **pause and ask the operator**: a synchronous human-in-the-loop (HITL) gate. That gate bottlenecks autonomous and parallel work — cloud workers and scheduled jobs stall on it, and the human arrives to a cold question they have to reconstruct context for.
+
+Most of these are **reversible judgment calls** — the kind a competent engineer resolves in a short design discussion, not a safety-critical commitment. What's missing at the agent layer isn't *a human* — it's *structured deliberation*: an adversarial check and a recorded rationale. A single agent deciding unilaterally reproduces the failure mode the HITL gate guards against (one perspective, nothing written down).
+
+**Convention: when an agent reaches a decision the conventions would route to a human, it convenes a bounded agent team that runs a two-gate design review, records the outcome, and proceeds — instead of blocking.** The human reviews the record asynchronously. The shape borrows from the Google engineering design-doc culture ([Design Docs at Google](https://www.industrialempathy.com/posts/design-docs-at-google/)), run as two color-coded gates:
+
+| Gate | Doc | Frames | Reviewed for | On approval |
+|------|-----|--------|--------------|-------------|
+| 1 | **Green Doc** (strategy) | problem, goals, non-goals, ≥2 options + trade-offs, open questions | are we solving the right problem; is the direction sound | choose a path → advance to Blue |
+| 2 | **Blue Doc** (blueprint) | the chosen path in execution detail: exact changes, sequencing, blast radius, rollback | correctness, scale, safety — can it execute cleanly | agents execute |
+
+**Roles** (one session can fill all three in sequence — the value is the structure, not the headcount):
+
+- **Driver / Author** — frames the decision, writes the Green Doc then the Blue Doc.
+- **Reviewers (2–3, adversarial, distinct lenses)** — Green: critique direction / product-fit; Blue: critique correctness / scale / safety. Prompted to refute, not rubber-stamp.
+- **Decider** — adjudicates, approves each gate, records the decision + rationale, gives the go.
+
+**Where the record lands:** `docs/analysis/YYYY-MM-DD-<topic>.md`; promote to an ADR in `docs/decisions/` when the decision is architectural. This is the asynchronous-review surface — the human audits, overrides, or learns from it after the fact.
+
+**What still escalates to a real human** (the convention replaces the *routine, reversible* gate, not human-owned calls):
+
+- Irreversible / destructive actions (deleting non-recreatable data, force-push, history rewrites).
+- Outward-facing actions (external comms, publishing to third parties, closing or editing artifacts owned by others).
+- Decisions the team **can't converge** on within a bounded number of rounds — escalate, but now with the Green/Blue docs attached, so the human starts from a fully-framed decision.
+
+In those cases the review still runs and produces the *recommendation*; the human confirms the irreversible/outward step. Bound the loop with a fixed reviewer count, a single decider, and a max-rounds cap — hitting the cap triggers the escalation escape hatch rather than looping.
+
 ## Working Patterns
 
 Concrete workflows showing how the multi-agent model plays out.
@@ -545,6 +574,16 @@ When you sit down to work in a domain.
 3. **You** — give direction based on what STATUS.md surfaced.
 4. **Implementer** — work, commit with appropriate prefixes.
 5. **Before ending:** update STATUS.md.
+
+### Pattern E: Resolve a decision instead of blocking on it
+
+When work hits a decision that would normally pause for the operator — and the decision is reversible (see Decision Review above for what isn't).
+
+1. **Driver** — frame the decision and author the Green Doc (problem, goals, non-goals, ≥2 options + trade-offs). Commit to `docs/analysis/` with `analysis:`.
+2. **Reviewers** — adversarially critique the direction; the Driver revises until the Decider approves the strategy gate.
+3. **Driver** — author the Blue Doc (the chosen path in execution detail) in the same record; **Reviewers** scrutinize correctness/scale/safety; **Decider** approves the blueprint gate.
+4. **Implementer** — execute the Blue Doc. The committed record is the human's asynchronous-review surface.
+5. **If the team can't converge, or the action is irreversible/outward-facing** — escalate to the human with both docs attached.
 
 ## CLAUDE.md Boilerplate
 
