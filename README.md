@@ -518,11 +518,13 @@ Most of these are **reversible judgment calls** — the kind a competent enginee
 | 1 | **Green Doc** (strategy) | problem, goals, non-goals, ≥2 options + trade-offs, open questions | are we solving the right problem; is the direction sound | choose a path → advance to Blue |
 | 2 | **Blue Doc** (blueprint) | the chosen path in execution detail: exact changes, sequencing, blast radius, rollback | correctness, scale, safety — can it execute cleanly | agents execute |
 
-**Roles** (one session can fill all three in sequence — the value is the structure, not the headcount):
+**Roles** (the Driver and Decider may be the orchestrating session; the **Reviewers must be independent agent contexts** — separate subagents, not the session wearing a second hat. Same-session self-review isn't adversarial and reduces to a single-agent decision):
 
 - **Driver / Author** — frames the decision, writes the Green Doc then the Blue Doc.
 - **Reviewers (2–3, adversarial, distinct lenses)** — Green: critique direction / product-fit; Blue: critique correctness / scale / safety. Prompted to refute, not rubber-stamp.
-- **Decider** — adjudicates, approves each gate, records the decision + rationale, gives the go.
+- **Decider / Moderator** — runs the discussion, watches for premature convergence, approves each gate, records the decision + rationale, gives the go or escalates on non-convergence.
+
+**The team operates in two phases, in this order:** (1) **independent critique** — each Reviewer reads the doc cold in its own context, no cross-talk, capturing uncorrelated objections; then (2) **moderated discussion** — Reviewers and Driver see each other's critiques and reconcile, the Decider moderates to consensus or escalation. The order is load-bearing: free discussion *first* lets the first confident voice anchor the rest into a false consensus (groupthink), which is the very failure the independence guards against. Reveal independently, then discuss.
 
 **Where the record lands:** `docs/analysis/YYYY-MM-DD-<topic>.md`; promote to an ADR in `docs/decisions/` when the decision is architectural. This is the asynchronous-review surface — the human audits, overrides, or learns from it after the fact.
 
