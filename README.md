@@ -8,11 +8,79 @@
 
 ***
 
+## Adopting this — hand this URL to Claude Code
+
+The fastest way to adopt this is to let a Claude Code session drive. Open Claude Code (terminal, or [claude.ai/code](https://claude.ai/code) on the web) and paste:
+
+> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
+
+The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. It authors the handful of skills your workflow needs with you — the template ships none by design.
+
+**Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and `gh` authenticated (only for the board workflow).
+
+***
+
 ## How to Use This Document
 
 **If you're reading as a human:** read Parts 1–3 to get the mental model. Part 4 describes the migration shape; you'll likely hand it to a Claude Code session along with a description of your current setup and ask for a tailored plan.
 
 **If you're a Claude Code agent helping someone adopt this architecture:** read end-to-end. Part 4 is a pattern, not a plan — your job is to inspect the user's environment (current directory layout, existing dotfiles, GitHub orgs, identity strategy, sensitive content scope), then produce a phase-by-phase plan specific to them. See the "Tailoring This Pattern" section at the end of Part 4 for what to ask before producing the plan.
+
+***
+
+## Quick start (run it)
+
+This repo is both the guide and a runnable template. To stand up the architecture on your own machine:
+
+```bash
+git clone https://github.com/armodis/claude-architecture-guide
+cd claude-architecture-guide
+$EDITOR setup.sh      # edit the CONFIG block: DOMAINS=(work personal ...)
+./setup.sh            # stow + symlink into ~/ (backs up any real files first)
+./verify.sh           # confirm the wiring
+```
+
+What ships alongside this guide:
+
+- **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
+- **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots).
+- **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/`, example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
+- **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
+
+Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https://code.claude.com/docs/en/overview). The rest of this document explains *why* the pieces are shaped the way they are — read on for the mental model, then tailor the template to your own domains.
+
+***
+
+## Setting up the project board (optional)
+
+The board is the shared-state plane for the [multi-agent workflow](#part-3-the-multi-agent-workflow) — where independent Claude sessions claim work and stay coordinated.
+
+**Fastest path — copy a ready-made template.** Two GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) are published with the fields and lifecycle this guide describes; open one and hit **Copy** to start pre-wired:
+
+- **[[TEMPLATE] Strategic Portfolio](https://github.com/orgs/armodis-ai/projects/6)** — the portfolio/work board.
+- **[[TEMPLATE] Personal Task Mgmt](https://github.com/orgs/armodis-ai/projects/7)** — the personal-domain analog.
+
+(Projects templates are an org-only GitHub feature, so the copy source has to live in an org — these do.)
+
+**No org, or building from scratch?** There's deliberately **no bootstrap script** — creating a board via the GraphQL API (field IDs, option IDs, dynamic iteration IDs) is exactly the brittle glue a capable Claude Code session handles better live than a frozen script would. Follow this checklist the agent executes with `gh`, confirming each step:
+
+1. **Create a Projects (v2) board** for the domain, spanning its repos.
+2. **Add the fields the policy reads:** `Status` (single-select: ToDo · Backlog · In Progress · Pending Release · Done), `Priority` (P0–P3), `Effort` (number or size), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task).
+3. **Define function labels** (e.g. `area:pipeline`) on the repos whose issues the agents pick up, so the queue is filterable.
+4. **Wire sync automation** with [GitHub Actions](https://docs.github.com/en/actions): move an item to `In Progress` when a PR opens, `Done` when it closes/merges. Start minimal; add rules as drift appears.
+5. **Adopt the working rules** from [Part 3](#part-3-the-multi-agent-workflow): read `STATUS.md` first, claim by flipping `Status → In Progress`, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
+
+The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Skills that operate on the board (triage, claim, sync) are yours to author — the agent drafts them against this model.
+
+If you *do* have a GitHub org, once you've configured one board to your liking you can [save it as an org Projects template](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) so future projects start pre-wired — a convenience on top of the checklist, not a prerequisite.
+
+***
+
+## Optional add-on: watch your agents from your phone (tmux-rc)
+
+Once you're running several agents at once, you'll want to see them without sitting at the terminal. **[tmux-rc](https://github.com/armodis/tmux-rc)** (by [Shapor Naghibzadeh](https://github.com/shapor)) is a small local daemon that reads a `tmux` pane, classifies what each agent is doing, and serves a **phone dashboard** — status at a glance, alerts when an agent is blocked on a question, and tap-to-answer straight back into the pane. Unlike Claude Code's built-in `/remote-control`, it observes the *terminal*, so it's vendor-agnostic: any agent (Claude Code, Codex, Gemini CLI, …), any model provider for the summarization pass.
+
+It's **independent of the substrate above** — a separate forkable project, not a dependency. Fork it, then follow its README to run the daemon or install the `systemd --user` units. Needs `tmux`, Python 3.12+, [`uv`](https://docs.astral.sh/uv/), and Google Vertex credentials for the classification pass.
 
 ***
 
@@ -472,7 +540,7 @@ When the work lands (PR merged, issue closed), the session moves the entry from 
 9. When done: remove from "In progress", add to "What just happened", commit, push
 ```
 
-**Stale claims:** if an agent dies mid-task, Status stays at `In Progress` with no PR landing. The simplest recovery is a periodic board-hygiene pass (e.g., `/project-sync` in QSI's pipeline) that surfaces stuck items and offers to revert them. Threshold is workload-dependent.
+**Stale claims:** if an agent dies mid-task, Status stays at `In Progress` with no PR landing. The simplest recovery is a periodic board-hygiene pass (e.g., a `project-sync` skill) that surfaces stuck items and offers to revert them. Threshold is workload-dependent.
 
 **Race window:** the gap between read and write is tiny and accepted. At handful-of-agents scale this is acceptable noise — the cost of strict locking (a distributed lock service, optimistic concurrency tokens) outweighs the cost of an occasional double-claim. Add stricter coordination only if it becomes a real problem.
 
@@ -501,7 +569,7 @@ Highest urgency first; within urgency, smallest size first. Naturally clears sma
 
 **Field-completeness precondition:**
 
-The policy only works if Priority + Effort are set. Agents **skip with warning** any issues missing either field — surface them in the session summary as "needs grooming" rather than picking them. This forces field discipline upstream, where it belongs. A board-hygiene rule (e.g., `/audit-fields` in QSI's pipeline) should flag function-labeled issues missing Priority or Effort.
+The policy only works if Priority + Effort are set. Agents **skip with warning** any issues missing either field — surface them in the session summary as "needs grooming" rather than picking them. This forces field discipline upstream, where it belongs. A board-hygiene rule (e.g., an `audit-fields` skill) should flag function-labeled issues missing Priority or Effort.
 
 Don't default-treat missing values (e.g., "missing → P2, E3") — it rewards leaving fields empty and corrodes the policy over time.
 

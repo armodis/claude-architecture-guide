@@ -1,0 +1,27 @@
+# Git identity routing by directory (stowed to ~/.gitconfig).
+#
+# The default identity below applies everywhere; the includeIf blocks override
+# it inside a given domain tree, so commits in ~/work/ carry your work email and
+# commits in ~/personal/ carry your personal email — automatically, no per-repo
+# `git config user.email`. This mirrors the CLAUDE.md domain split at the git layer.
+#
+# Create the referenced identity files (examples):
+#   ~/work/.gitconfig-identity      →  [user] name/email = work
+#   ~/personal/.gitconfig-identity  →  [user] name/email = personal
+# Each is a tiny file:  [user]\n  name = You\n  email = you@example.com
+
+[user]
+	name = Your Name
+	email = you@personal.example.com
+
+[includeIf "gitdir:~/work/"]
+	path = ~/work/.gitconfig-identity
+
+[includeIf "gitdir:~/personal/"]
+	path = ~/personal/.gitconfig-identity
+
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = true

@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Substrate — Domain Hierarchy Brief</title>
+<style>
+  :root {
+    --bg: #eceef2; --grid: rgba(22,32,44,0.045); --surface: #f7f9fb; --surface-2: #eef1f5;
+    --ink: #16202c; --muted: #5c6a78; --faint: #8494a2; --edge: #cdd5de; --edge-strong: #b3bfca;
+    --wire: #0c7a83; --wire-ink: #0a5f66; --work: #0c7a83; --work-bg: rgba(12,122,131,0.08);
+    --personal: #a9591f; --personal-bg: rgba(169,89,31,0.09); --warn: #ad3535; --warn-bg: rgba(173,53,53,0.08);
+    --shadow: 0 1px 2px rgba(22,32,44,0.05), 0 8px 24px rgba(22,32,44,0.06);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d151d; --grid: rgba(160,190,210,0.05); --surface: #131f2a; --surface-2: #182633;
+      --ink: #dfe7ee; --muted: #91a1af; --faint: #6c7d8b; --edge: #26333f; --edge-strong: #33434f;
+      --wire: #34d0c3; --wire-ink: #5fe0d4; --work: #34d0c3; --work-bg: rgba(52,208,195,0.10);
+      --personal: #e0995a; --personal-bg: rgba(224,153,90,0.12); --warn: #e58080; --warn-bg: rgba(229,128,128,0.11);
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 10px 30px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #eceef2; --grid: rgba(22,32,44,0.045); --surface: #f7f9fb; --surface-2: #eef1f5;
+    --ink: #16202c; --muted: #5c6a78; --faint: #8494a2; --edge: #cdd5de; --edge-strong: #b3bfca;
+    --wire: #0c7a83; --wire-ink: #0a5f66; --work: #0c7a83; --work-bg: rgba(12,122,131,0.08);
+    --personal: #a9591f; --personal-bg: rgba(169,89,31,0.09); --warn: #ad3535; --warn-bg: rgba(173,53,53,0.08);
+    --shadow: 0 1px 2px rgba(22,32,44,0.05), 0 8px 24px rgba(22,32,44,0.06);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d151d; --grid: rgba(160,190,210,0.05); --surface: #131f2a; --surface-2: #182633;
+    --ink: #dfe7ee; --muted: #91a1af; --faint: #6c7d8b; --edge: #26333f; --edge-strong: #33434f;
+    --wire: #34d0c3; --wire-ink: #5fe0d4; --work: #34d0c3; --work-bg: rgba(52,208,195,0.10);
+    --personal: #e0995a; --personal-bg: rgba(224,153,90,0.12); --warn: #e58080; --warn-bg: rgba(229,128,128,0.11);
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 10px 30px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background-color: var(--bg);
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 28px 28px;
+    color: var(--ink); font-family: var(--sans); line-height: 1.62; -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--wire-ink); text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--wire); outline-offset: 2px; border-radius: 3px; }
+  code, .mono { font-family: var(--mono); }
+  .path { font-family: var(--mono); font-size: 0.88em; color: var(--wire-ink); word-break: break-word; }
+
+  /* ---------- shell ---------- */
+  .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; min-height: 100vh; }
+
+  /* ---------- sidebar ---------- */
+  .side { border-right: 1px solid var(--edge); padding: clamp(1.4rem, 3vw, 2.2rem) 1.2rem; position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; }
+  .brand { margin-bottom: 2rem; }
+  .brand__mark { font-family: var(--mono); font-weight: 600; font-size: 1.02rem; letter-spacing: 0.02em; display: flex; align-items: center; gap: 0.5rem; }
+  .brand__mark .sq { width: 0.75rem; height: 0.75rem; border: 2px solid var(--wire); border-radius: 2px; display: inline-block; }
+  .brand__sub { font-family: var(--mono); font-size: 0.72rem; color: var(--faint); margin-top: 0.35rem; }
+  .nav { display: flex; flex-direction: column; gap: 0.15rem; }
+  .nav__label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--faint); margin: 1.1rem 0 0.5rem 0.5rem; }
+  .nav__item {
+    display: flex; align-items: baseline; gap: 0.6rem; padding: 0.5rem 0.6rem; border-radius: 6px;
+    font-size: 0.9rem; color: var(--muted); text-decoration: none; border: 1px solid transparent; cursor: pointer;
+    background: none; width: 100%; text-align: left; font-family: var(--sans); line-height: 1.3;
+  }
+  .nav__item:hover { background: var(--surface-2); color: var(--ink); }
+  .nav__item .n { font-family: var(--mono); font-size: 0.7rem; color: var(--faint); flex: none; width: 1.2rem; }
+  .nav__item.is-active { background: var(--surface); border-color: var(--edge); color: var(--ink); box-shadow: var(--shadow); border-left: 3px solid var(--wire); }
+  .nav__item.is-active .n { color: var(--wire); }
+
+  /* ---------- content ---------- */
+  .main { padding: clamp(1.6rem, 4vw, 3.4rem) clamp(1.2rem, 4vw, 3.2rem) 5rem; min-width: 0; }
+  .pane { display: block; max-width: 820px; }
+  body.js .pane { display: none; }
+  body.js .pane.is-active { display: block; animation: fade 0.4s ease both; }
+  @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { body.js .pane.is-active { animation: none; } }
+
+  .eyebrow { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--wire-ink); display: flex; align-items: center; gap: 0.6rem; margin: 0 0 1rem; }
+  .eyebrow::before { content: ""; width: 1.6rem; height: 1px; background: var(--wire); }
+  h1 { font-family: var(--mono); font-weight: 600; font-size: clamp(1.7rem, 4vw, 2.5rem); line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 0.8rem; text-wrap: balance; }
+  h1 .hl { color: var(--wire); }
+  h2 { font-family: var(--mono); font-weight: 600; font-size: clamp(1.3rem, 3vw, 1.65rem); letter-spacing: -0.015em; margin: 0 0 0.5rem; text-wrap: balance; }
+  .lede { font-size: clamp(1rem, 2vw, 1.14rem); color: var(--muted); max-width: 62ch; margin: 0 0 1.6rem; }
+  h3 { font-family: var(--mono); font-size: 0.95rem; font-weight: 600; margin: 2rem 0 0.9rem; color: var(--ink); }
+  p { margin: 0 0 1rem; }
+  .prose { color: var(--muted); }
+  .prose strong, .prose b { color: var(--ink); font-weight: 600; }
+
+  .meta-row { display: flex; flex-wrap: wrap; gap: 0.5rem; font-family: var(--mono); font-size: 0.74rem; margin: 1.4rem 0 0; }
+  .chip { border: 1px solid var(--edge-strong); border-radius: 999px; padding: 0.2rem 0.7rem; color: var(--muted); background: var(--surface); white-space: nowrap; }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  /* concern cards on overview */
+  .concerns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.9rem; margin-top: 1.4rem; }
+  @media (max-width: 620px) { .concerns { grid-template-columns: 1fr; } }
+  .ccard { text-align: left; background: var(--surface); border: 1px solid var(--edge); border-radius: 10px; padding: 1.1rem 1.15rem; cursor: pointer; font-family: var(--sans); box-shadow: var(--shadow); border-top: 3px solid var(--wire); transition: transform 0.15s ease; }
+  .ccard:hover { transform: translateY(-2px); }
+  .ccard__n { font-family: var(--mono); font-size: 0.7rem; color: var(--wire); font-weight: 600; }
+  .ccard__t { font-family: var(--mono); font-weight: 600; font-size: 1rem; color: var(--ink); margin: 0.3rem 0 0.35rem; }
+  .ccard__d { color: var(--muted); font-size: 0.86rem; }
+
+  /* cascade */
+  .cascade { display: flex; flex-direction: column; gap: 0; margin: 1.2rem 0; }
+  .layer { background: var(--surface); border: 1px solid var(--edge); border-left: 3px solid var(--wire); border-radius: 8px; padding: 0.9rem 1.1rem; box-shadow: var(--shadow); }
+  .layer[data-depth="1"] { margin-left: clamp(0.8rem, 5vw, 2.6rem); }
+  .layer[data-depth="2"] { margin-left: clamp(1.6rem, 10vw, 5.2rem); }
+  .connector { height: 1.6rem; display: flex; align-items: center; padding-left: 1.1rem; font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+  .connector.c1 { margin-left: clamp(0.8rem, 5vw, 2.6rem); }
+  .connector.c2 { margin-left: clamp(1.6rem, 10vw, 5.2rem); }
+  .layer__tag { font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--wire-ink); font-weight: 600; }
+  .layer__path { font-family: var(--mono); font-size: 0.92rem; color: var(--ink); font-weight: 600; margin: 0.3rem 0; word-break: break-word; }
+  .layer__desc { color: var(--muted); font-size: 0.88rem; margin: 0; }
+  .layer__src { font-family: var(--mono); font-size: 0.7rem; color: var(--faint); margin-top: 0.45rem; }
+  .layer__src b { color: var(--wire-ink); font-weight: 600; }
+
+  /* domains */
+  .domains { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; align-items: stretch; margin: 1.2rem 0; }
+  .domain { border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); padding: 1.15rem 1.2rem; box-shadow: var(--shadow); }
+  .domain--work { border-top: 3px solid var(--work); }
+  .domain--personal { border-top: 3px solid var(--personal); }
+  .domain__name { font-family: var(--mono); font-weight: 600; font-size: 1.02rem; display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.1rem; }
+  .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; flex: none; }
+  .domain--work .dot { background: var(--work); } .domain--personal .dot { background: var(--personal); }
+  .domain__root { font-family: var(--mono); font-size: 0.78rem; margin: 0 0 0.7rem; }
+  .domain--work .domain__root { color: var(--work); } .domain--personal .domain__root { color: var(--personal); }
+  .domain__note { color: var(--muted); font-size: 0.86rem; margin: 0 0 0.9rem; }
+  .repo-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+  .repo-list li { display: flex; gap: 0.5rem; align-items: baseline; }
+  .repo-list .r { font-family: var(--mono); font-size: 0.8rem; color: var(--ink); font-weight: 600; white-space: nowrap; }
+  .repo-list .d { color: var(--muted); font-size: 0.82rem; }
+  .board-link { display: inline-block; margin-top: 0.8rem; font-family: var(--mono); font-size: 0.75rem; }
+  .firewall { position: relative; width: clamp(2rem, 5vw, 3.4rem); display: flex; align-items: center; justify-content: center; }
+  .firewall::before { content: ""; position: absolute; top: 6%; bottom: 6%; left: 50%; border-left: 2px dashed var(--edge-strong); }
+  .firewall span { position: relative; background: var(--bg); font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--faint); writing-mode: vertical-rl; padding: 0.5rem 0; transform: rotate(180deg); }
+  @media (max-width: 640px) {
+    .domains { grid-template-columns: 1fr; }
+    .firewall { width: auto; height: 2.4rem; }
+    .firewall::before { top: 50%; bottom: auto; left: 8%; right: 8%; border-left: none; border-top: 2px dashed var(--edge-strong); }
+    .firewall span { writing-mode: horizontal-tb; transform: none; padding: 0 0.6rem; }
+  }
+
+  /* generic card + note */
+  .card { background: var(--surface); border: 1px solid var(--edge); border-radius: 10px; padding: 1.15rem 1.25rem; box-shadow: var(--shadow); margin: 1.1rem 0; }
+  .note { border-left: 3px solid var(--wire); background: var(--work-bg); border-radius: 0 8px 8px 0; padding: 0.9rem 1.1rem; margin: 1.1rem 0; font-size: 0.9rem; color: var(--ink); }
+  .note b { color: var(--wire-ink); }
+
+  /* docs resource strip */
+  .docs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.7rem; margin: 1rem 0; }
+  .doclink { display: block; text-decoration: none; background: var(--surface); border: 1px solid var(--edge); border-left: 3px solid var(--wire); border-radius: 8px; padding: 0.75rem 0.9rem; box-shadow: var(--shadow); transition: transform 0.15s ease; }
+  .doclink:hover { transform: translateY(-2px); }
+  .doclink__t { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--wire-ink); }
+  .doclink__u { font-family: var(--mono); font-size: 0.68rem; color: var(--faint); margin-top: 0.25rem; word-break: break-all; }
+  .doclink__d { color: var(--muted); font-size: 0.8rem; margin-top: 0.35rem; }
+
+  /* agent roster */
+  .roster { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.9rem; margin: 1rem 0; }
+  .role { background: var(--surface); border: 1px solid var(--edge); border-radius: 9px; padding: 0.9rem 1rem; box-shadow: var(--shadow); }
+  .role__k { font-family: var(--mono); font-size: 0.64rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--wire-ink); font-weight: 600; margin-bottom: 0.55rem; }
+  .role p { color: var(--muted); font-size: 0.82rem; margin: 0; }
+  .role p b { color: var(--ink); font-weight: 600; }
+  .agents { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .agent { font-family: var(--mono); font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 5px; background: var(--surface-2); color: var(--ink); border: 1px solid var(--edge); }
+
+  /* requirements */
+  .reqs { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); margin: 1.1rem 0; }
+  .req { display: grid; grid-template-columns: 9rem 1fr; gap: 1rem; padding: 0.9rem 1.1rem; background: var(--surface); border-top: 1px solid var(--edge); }
+  .req:first-child { border-top: none; }
+  .req__k { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--wire-ink); font-weight: 600; padding-top: 0.1rem; }
+  .req__v { color: var(--ink); font-size: 0.9rem; }
+  .req__v .em { color: var(--muted); }
+  .req--warn { background: var(--warn-bg); } .req--warn .req__k { color: var(--warn); }
+  @media (max-width: 560px) { .req { grid-template-columns: 1fr; gap: 0.3rem; } }
+  .prefixes { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+  .pfx { font-family: var(--mono); font-size: 0.73rem; padding: 0.15rem 0.55rem; border-radius: 5px; background: var(--work-bg); color: var(--wire-ink); border: 1px solid var(--edge); }
+  .pfx.alt { background: var(--surface-2); color: var(--muted); }
+
+  /* two-plane (surfaces) */
+  .planes { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem; margin: 1.2rem 0; }
+  @media (max-width: 620px) { .planes { grid-template-columns: 1fr; } }
+  .plane { background: var(--surface); border: 1px solid var(--edge); border-radius: 10px; padding: 1.1rem 1.15rem; box-shadow: var(--shadow); }
+  .plane__k { font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600; margin-bottom: 0.4rem; }
+  .plane--local { border-top: 3px solid var(--personal); } .plane--local .plane__k { color: var(--personal); }
+  .plane--repo { border-top: 3px solid var(--work); } .plane--repo .plane__k { color: var(--work); }
+  .plane__p { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--ink); margin-bottom: 0.5rem; word-break: break-word; }
+  .plane__d { color: var(--muted); font-size: 0.86rem; }
+
+  .surfaces { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.7rem; margin: 1rem 0; }
+  .surf { background: var(--surface-2); border: 1px solid var(--edge); border-radius: 8px; padding: 0.8rem 0.9rem; }
+  .surf__t { font-family: var(--mono); font-size: 0.82rem; font-weight: 600; color: var(--ink); }
+  .surf__d { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+  .surf__b { font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 0.5rem; }
+  .surf__b.local { color: var(--personal); } .surf__b.repo { color: var(--work); }
+
+  /* inline link-button */
+  .linklike { background: none; border: none; color: var(--wire-ink); font: inherit; cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+
+  /* status stepper */
+  .stepper { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem; margin: 1rem 0 0.4rem; }
+  .step { font-family: var(--mono); font-size: 0.78rem; padding: 0.4rem 0.7rem; border: 1px solid var(--edge); border-radius: 6px; background: var(--surface); color: var(--ink); white-space: nowrap; }
+  .step.lock { border-color: var(--wire); background: var(--work-bg); color: var(--wire-ink); font-weight: 600; }
+  .step.done { border-style: dashed; color: var(--muted); }
+  .arw { color: var(--faint); font-family: var(--mono); padding: 0 0.15rem; }
+
+  /* hierarchy ladder */
+  .ladder { display: flex; flex-direction: column; gap: 0.35rem; margin: 1rem 0; }
+  .rung { display: flex; align-items: baseline; gap: 0.7rem; padding: 0.45rem 0.75rem; background: var(--surface); border: 1px solid var(--edge); border-left: 3px solid var(--wire); border-radius: 6px; }
+  .rung .lv { font-family: var(--mono); font-size: 0.82rem; color: var(--wire-ink); font-weight: 600; white-space: nowrap; }
+  .rung .meta { color: var(--muted); font-size: 0.8rem; }
+  .rung[data-i="0"] { border-left-color: var(--faint); background: var(--surface-2); }
+  .rung[data-i="1"] { margin-left: clamp(0.6rem, 3vw, 1.4rem); }
+  .rung[data-i="2"] { margin-left: clamp(1.2rem, 6vw, 2.8rem); }
+  .rung[data-i="3"] { margin-left: clamp(1.8rem, 9vw, 4.2rem); }
+  .rung[data-i="4"] { margin-left: clamp(2.4rem, 12vw, 5.6rem); }
+
+  /* theme chips */
+  .themes { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.8rem 0; }
+  .theme-chip { font-family: var(--mono); font-size: 0.74rem; padding: 0.22rem 0.62rem; border-radius: 999px; border: 1px solid var(--edge-strong); background: var(--surface); color: var(--muted); }
+
+  pre { margin: 0.8rem 0 0; background: var(--bg); border: 1px solid var(--edge); border-radius: 7px; padding: 0.85rem 1rem; overflow-x: auto; }
+  pre code { font-size: 0.81rem; color: var(--ink); line-height: 1.7; }
+  .cmt { color: var(--faint); }
+
+  .foot { margin-top: 2.6rem; padding-top: 1.2rem; border-top: 1px solid var(--edge); color: var(--faint); font-family: var(--mono); font-size: 0.72rem; }
+  .foot a { color: var(--muted); }
+
+  /* paste-in prompt card */
+  .promptcard { background: var(--surface-2); border: 1px solid var(--edge); border-left: 3px solid var(--wire); border-radius: 10px; padding: 1rem 1.15rem; margin: 0.9rem 0; }
+  .promptcard__label { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--wire-ink); margin-bottom: 0.55rem; }
+  .promptcard__body { font-family: var(--mono); font-size: 0.82rem; line-height: 1.7; color: var(--ink); white-space: pre-wrap; margin: 0; }
+
+  /* board-template callout */
+  .tmpl { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
+  .tmpl a { display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--mono); font-size: 0.76rem; text-decoration: none; color: var(--wire-ink); background: var(--surface); border: 1px solid var(--edge); border-radius: 999px; padding: 0.25rem 0.75rem; }
+  .tmpl a:hover { border-color: var(--wire); }
+
+  /* responsive shell */
+  @media (max-width: 820px) {
+    .shell { grid-template-columns: 1fr; }
+    .side { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--edge); padding: 1.1rem; }
+    .nav { flex-direction: row; flex-wrap: wrap; gap: 0.4rem; }
+    .nav__label { display: none; }
+    .nav__item { width: auto; }
+    .brand { margin-bottom: 1.1rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand__mark"><span class="sq"></span>SUBSTRATE</div>
+      <div class="brand__sub">~/personal/dotfiles</div>
+    </div>
+    <nav class="nav" aria-label="Sections">
+      <span class="nav__label">Brief</span>
+      <button class="nav__item is-active" data-pane="overview"><span class="n">·</span>Overview</button>
+      <span class="nav__label">Concerns</span>
+      <button class="nav__item" data-pane="separation"><span class="n">01</span>Separation of concerns</button>
+      <button class="nav__item" data-pane="orchestration"><span class="n">02</span>Agent-team orchestration</button>
+      <button class="nav__item" data-pane="portability"><span class="n">03</span>Configuration portability</button>
+      <button class="nav__item" data-pane="surfaces"><span class="n">04</span>Agent surfaces</button>
+      <span class="nav__label">Component</span>
+      <button class="nav__item" data-pane="portfolio"><span class="n">◆</span>Portfolio Mgmt</button>
+      <span class="nav__label">Build it</span>
+      <button class="nav__item" data-pane="build"><span class="n">▸</span>Set it up yourself</button>
+    </nav>
+  </aside>
+
+  <main class="main">
+
+    <!-- OVERVIEW -->
+    <section class="pane is-active" id="overview">
+      <p class="eyebrow">CLAUDE.md substrate</p>
+      <h1>One system behind a <span class="hl">fleet of Claude sessions</span></h1>
+      <p class="lede">Layered CLAUDE.md instructions, skills, agents, and settings — scoped by domain and coordinated through GitHub — so every Claude session behaves consistently and works in concert, wherever it runs. Four concerns, one shared component. It's all public <a href="https://code.claude.com/docs/en/overview">Claude Code</a> features: clone <a href="https://github.com/armodis/claude-architecture-guide">the template repo</a>, edit one config block, and run <code>setup.sh</code> to stand up your own.</p>
+
+      <div class="concerns">
+        <button class="ccard" data-pane="separation">
+          <div class="ccard__n">01</div>
+          <div class="ccard__t">Separation of concerns</div>
+          <div class="ccard__d">A three-layer cascade and a hard firewall between the work and personal domains.</div>
+        </button>
+        <button class="ccard" data-pane="orchestration">
+          <div class="ccard__n">02</div>
+          <div class="ccard__t">Agent-team orchestration</div>
+          <div class="ccard__d">Many Claude sessions coordinate through GitHub, with a named agent roster and team specs.</div>
+        </button>
+        <button class="ccard" data-pane="portability">
+          <div class="ccard__n">03</div>
+          <div class="ccard__t">Configuration portability</div>
+          <div class="ccard__d">Stow + symlinks make one repo deploy identically across machines — and across OSes.</div>
+        </button>
+        <button class="ccard" data-pane="surfaces">
+          <div class="ccard__n">04</div>
+          <div class="ccard__t">Agent surfaces</div>
+          <div class="ccard__d">The same config serves CLI, Desktop, Web, and mobile — because state lives outside any one of them.</div>
+        </button>
+      </div>
+
+      <button class="ccard" data-pane="portfolio" style="border-top-color: var(--personal); width: 100%; margin-top: 0.9rem;">
+        <div class="ccard__n" style="color: var(--personal)">Component ◆</div>
+        <div class="ccard__t">Portfolio Mgmt</div>
+        <div class="ccard__d">The GitHub Projects board that <em>is</em> the shared state plane — the task graph orchestration claims from and syncs against.</div>
+      </button>
+
+      <div class="meta-row">
+        <span class="chip">source of truth: <b>one git repo</b></span>
+        <span class="chip">deploy: <b>stow + symlinks</b></span>
+        <span class="chip">wiring: <b>setup.sh</b></span>
+        <span class="chip">built on: <b>public Claude Code features</b></span>
+      </div>
+    </section>
+
+    <!-- SEPARATION -->
+    <section class="pane" id="separation">
+      <p class="eyebrow">Concern 01</p>
+      <h2>Separation of concerns</h2>
+      <p class="lede">Instructions are scoped by directory depth. Claude Code walks from <code>~/</code> down to the working directory and stacks every <a href="https://code.claude.com/docs/en/memory#how-claude-md-files-load"><code>CLAUDE.md</code></a> it passes — each layer inherits everything above and adds its own.</p>
+
+      <h3>The three-layer cascade</h3>
+      <p class="prose">Shown for a session launched in <span class="path">~/work/app/</span>. The <a href="https://code.claude.com/docs/en/memory#choose-where-to-put-claude-md-files">load-order scopes</a> are a documented feature — user, then project, then nested subdirectory.</p>
+      <div class="cascade">
+        <div class="layer" data-depth="0">
+          <span class="layer__tag">Layer 0 · User / global — every session</span>
+          <p class="layer__path">~/.claude/CLAUDE.md</p>
+          <p class="layer__desc">Working habits, output style, markdown rules, machine System Notes.</p>
+          <p class="layer__src">symlink ← <b>claude-user/.claude/CLAUDE.md</b></p>
+        </div>
+        <div class="connector c1">inherits ▾</div>
+        <div class="layer" data-depth="1">
+          <span class="layer__tag">Layer 1 · Domain root — the whole tree</span>
+          <p class="layer__path">~/work/CLAUDE.md</p>
+          <p class="layer__desc">Domain conventions: repo directory, launch rules, cross-repo assumptions.</p>
+          <p class="layer__src">symlink ← <b>claude-domains/work/CLAUDE.md</b></p>
+        </div>
+        <div class="connector c2">inherits ▾</div>
+        <div class="layer" data-depth="2">
+          <span class="layer__tag">Layer 2 · Project / repo — when launched here</span>
+          <p class="layer__path">~/work/app/CLAUDE.md</p>
+          <p class="layer__desc">Repo context: pipeline, board, multi-agent workflow. Committed in the repo, not in dotfiles. Nests further (app/backend/, app/ui/).</p>
+          <p class="layer__src">lives in the work/app repo clone</p>
+        </div>
+      </div>
+
+      <h3>Two domains, one firewall</h3>
+      <p class="prose">Both hang off the shared global layer, but neither inherits the other. The split is declared: <code>personal/CLAUDE.md</code> states it applies to <span class="path">~/personal/*</span> and <b>not</b> <span class="path">~/work/</span>.</p>
+      <div class="domains">
+        <div class="domain domain--work">
+          <p class="domain__name"><span class="dot"></span>Work</p>
+          <p class="domain__root">~/work/</p>
+          <p class="domain__note">Day-job work. Each sub-dir is a separate repository clone with its own CLAUDE.md.</p>
+          <ul class="repo-list">
+            <li><span class="r">app/</span><span class="d">main application</span></li>
+            <li><span class="r">infra/</span><span class="d">infrastructure</span></li>
+            <li><span class="r">…</span><span class="d">your other work repos</span></li>
+          </ul>
+        </div>
+        <div class="firewall"><span>no inheritance</span></div>
+        <div class="domain domain--personal">
+          <p class="domain__name"><span class="dot"></span>Personal</p>
+          <p class="domain__root">~/personal/</p>
+          <p class="domain__note">Personal / family. Less-formal tone; extra care on legal, finance, health.</p>
+          <ul class="repo-list">
+            <li><span class="r">dotfiles/</span><span class="d">this substrate</span></li>
+            <li><span class="r">home/</span><span class="d">household</span></li>
+            <li><span class="r">…</span><span class="d">your other personal repos</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="note"><b>Set it up:</b> the whole cascade is the documented <a href="https://code.claude.com/docs/en/memory#how-claude-md-files-load">CLAUDE.md load order</a> plus <a href="https://code.claude.com/docs/en/memory#organize-rules-with-claude/rules/">path-scoped rules</a> — no custom tooling required.</p></div>
+    </section>
+
+    <!-- ORCHESTRATION -->
+    <section class="pane" id="orchestration">
+      <p class="eyebrow">Concern 02</p>
+      <h2>Agent-team orchestration</h2>
+      <p class="lede">Several Claude sessions may touch the same repo at once. Coordination doesn't live in any session — it lives in <strong>GitHub</strong>, so the state survives whichever surface or machine shows up next.</p>
+
+      <div class="note"><b>Shared state plane.</b> Issues are the task queue, the project board Status is the lock, <code>STATUS.md</code> is the narrative, and <a href="https://git-scm.com/docs/git-worktree"><code>git worktrees</code></a> keep parallel impl work isolated. Any session reads the same truth. &nbsp;<button class="linklike" data-pane="portfolio">See Portfolio Mgmt →</button></div>
+
+      <h3>The roster — <span class="mono" style="color:var(--muted);font-weight:400">.claude/agents/</span></h3>
+      <p class="prose">Named <a href="https://code.claude.com/docs/en/sub-agents">subagents</a> composed into review/audit teams (Claude Code's built-in <a href="https://code.claude.com/docs/en/sub-agents">agent-teams</a> feature). Team specs live in <code>.claude/teams/</code>; the review checklists and pipeline steps are <a href="https://code.claude.com/docs/en/skills">skills</a> under <code>.claude/skills/</code> (custom <a href="https://code.claude.com/docs/en/commands">slash commands</a> are the same mechanism).</p>
+      <div class="roster">
+        <div class="role">
+          <div class="role__k">Reviewers</div>
+          <div class="agents"><span class="agent">code-reviewer</span><span class="agent">doc-reviewer</span><span class="agent">feedback-reviewer</span><span class="agent">issue-reviewer</span><span class="agent">planning-reviewer</span></div>
+        </div>
+        <div class="role">
+          <div class="role__k">Auditors</div>
+          <div class="agents"><span class="agent">priority-auditor</span><span class="agent">reconcile-auditor</span><span class="agent">restructure-auditor</span><span class="agent">type-auditor</span></div>
+        </div>
+        <div class="role">
+          <div class="role__k">Editors</div>
+          <div class="agents"><span class="agent">body-editor</span><span class="agent">test-agent</span></div>
+        </div>
+      </div>
+
+      <h3>What every agent must do</h3>
+      <div class="reqs">
+        <div class="req"><div class="req__k">STATUS.md</div><div class="req__v">Read it <b>first</b> on entering a repo; <span class="em">update it before leaving.</span></div></div>
+        <div class="req"><div class="req__k">Claim first</div><div class="req__v">Flip board Status <code>ToDo → In Progress</code> (the queryable lock), log it in STATUS.md with session + date, commit to <code>main</code> with a <code>status:</code> prefix.</div></div>
+        <div class="req"><div class="req__k">Select work</div><div class="req__v">Open labeled <code>ToDo</code>, sorted <code>Priority ASC, Effort ASC, Created ASC</code>, head first. Skip (warn) any missing Priority/Effort. <span class="em">Modes: quick-wins · focused-feature · backlog-cleanup.</span></div></div>
+        <div class="req"><div class="req__k">Worktrees</div><div class="req__v">Impl runs in a <a href="https://git-scm.com/docs/git-worktree"><code>git worktree</code></a> on a feature branch. <code>status:</code> → <code>main</code> directly; <code>impl:</code> → the branch, landing via PR. Re-base every path onto the worktree root.</div></div>
+        <div class="req"><div class="req__k">Commits</div><div class="req__v"><div class="prefixes"><span class="pfx">analysis:</span><span class="pfx">plan:</span><span class="pfx">impl:</span><span class="pfx">status:</span><span class="pfx alt">feat:</span><span class="pfx alt">fix:</span><span class="pfx alt">docs:</span><span class="pfx alt">chore:</span></div></div></div>
+        <div class="req"><div class="req__k">Decisions</div><div class="req__v">For a <b>reversible</b> call that would block on a human, run a Green Doc (direction) → Blue Doc (execution) review and proceed, recording the outcome.</div></div>
+        <div class="req req--warn"><div class="req__k">Escalate</div><div class="req__v">Always hand to a <b>human</b> for irreversible / outward-facing actions — deleting non-recreatable data, force-push, external comms, editing others' issues.</div></div>
+      </div>
+      <p class="prose" style="font-size:0.85rem">These are project conventions written into the repo's own <a href="https://code.claude.com/docs/en/memory">CLAUDE.md</a> — the mechanism is public; the policy is yours to define.</p>
+    </section>
+
+    <!-- PORTABILITY -->
+    <section class="pane" id="portability">
+      <p class="eyebrow">Concern 03</p>
+      <h2>Configuration portability</h2>
+      <p class="lede">One repo is the source of truth; a single script rebuilds the whole environment on any machine. Nothing that drives Claude is hand-placed — it's all symlinks back into version control.</p>
+
+      <h3>How it deploys</h3>
+      <p class="prose"><code>setup.sh</code> uses <a href="https://www.gnu.org/software/stow/">GNU Stow</a> for whole-directory package installs and <strong>per-file symlinks</strong> where two sources share a target. Real files found in the way are backed up first.</p>
+      <div class="card">
+        <ul class="repo-list" style="gap:0.55rem">
+          <li><span class="r">claude-user/</span><span class="d">stow → <span class="path">~/.claude/</span> — CLAUDE.md, settings.json, statusline</span></li>
+          <li><span class="r">claude-domains/</span><span class="d">symlink → <span class="path">~/work/</span> &amp; <span class="path">~/personal/</span> domain roots</span></li>
+          <li><span class="r">bash/ · git/</span><span class="d">stow → <span class="path">~/</span> — shell + git config</span></li>
+        </ul>
+      </div>
+
+      <h3>What travels in settings.json</h3>
+      <p class="prose">Model, effort level, enabled plugins, permission allowlist, statusline command, theme — the whole operating profile moves with the repo. Every key is documented in the <a href="https://code.claude.com/docs/en/settings">settings reference</a>.</p>
+
+      <div class="note"><b>Cross-OS, not just this laptop.</b> The <a href="https://code.claude.com/docs/en/settings#available-settings">permission allowlist</a> carries Windows entries (<code>powershell:*</code>, <code>copy:*</code>, <span class="path">/c/Users/…</span>) alongside the Linux ones — the same repo deploys on Linux <em>and</em> Windows.</div>
+
+      <pre><code><span class="cmt"># clone the template, edit the config block, deploy</span>
+git clone https://github.com/armodis/claude-architecture-guide
+cd claude-architecture-guide
+$EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
+./setup.sh         <span class="cmt"># stow + symlink (backs up real files first)</span>
+./verify.sh        <span class="cmt"># confirm the wiring</span></code></pre>
+      <p class="prose" style="font-size:0.85rem; margin-top:0.8rem">The repo ships a <code>template/</code> scaffold (universal Layer 0 + example <code>work</code>/<code>personal</code> domain roots + shell/git dotfiles). Copy it into your own dotfiles repo, or run in place.</p>
+    </section>
+
+    <!-- SURFACES -->
+    <section class="pane" id="surfaces">
+      <p class="eyebrow">Concern 04</p>
+      <h2>Agent surfaces</h2>
+      <p class="lede">The same instructions drive Claude wherever it runs. Per the <a href="https://code.claude.com/docs/en/overview#use-claude-code-everywhere">Claude Code docs</a>: “each <a href="https://code.claude.com/docs/en/glossary#surface">surface</a> connects to the same underlying engine, so your CLAUDE.md files, settings, and MCP servers work across all of them.”</p>
+
+      <h3>Two config planes</h3>
+      <div class="planes">
+        <div class="plane plane--local">
+          <div class="plane__k">User-local</div>
+          <div class="plane__p">~/.claude/ ← dotfiles</div>
+          <div class="plane__d">Deployed by stow onto machines you set up. Reaches local surfaces — the CLI and Desktop — but not a cloud clone.</div>
+        </div>
+        <div class="plane plane--repo">
+          <div class="plane__k">Repo-committed</div>
+          <div class="plane__p">&lt;repo&gt;/.claude/ + CLAUDE.md</div>
+          <div class="plane__d">Committed in each repo, so it travels with the clone to <em>any</em> surface — including web / cloud Claude Code — via standard project resolution.</div>
+        </div>
+      </div>
+
+      <h3>Where it runs</h3>
+      <div class="surfaces">
+        <div class="surf"><div class="surf__t">Claude Code CLI</div><div class="surf__d">Local TUI, fullscreen. Both planes.</div><div class="surf__b local">local + repo</div></div>
+        <div class="surf"><div class="surf__t">Claude Desktop</div><div class="surf__d">Local app on the same machine.</div><div class="surf__b local">local + repo</div></div>
+        <div class="surf"><div class="surf__t">Web Claude Code</div><div class="surf__d">Cloud clone; sees committed repo config only.</div><div class="surf__b repo">repo plane</div></div>
+        <div class="surf"><div class="surf__t">Chat / Mobile</div><div class="surf__d">Reads/writes the same GitHub state; push notifications on.</div><div class="surf__b repo">shared state</div></div>
+      </div>
+
+      <div class="note"><b>Why it composes.</b> Because task state lives in GitHub — issues, board Status, <code>STATUS.md</code>, worktrees — plus any <a href="https://code.claude.com/docs/en/mcp">MCP servers</a> you connect, a web session, the desktop app, and a laptop CLI collaborate on the same work without sharing local state. The substrate makes each surface <em>consistent</em>; externalized state makes them <em>coordinated</em>.</div>
+      <p class="prose" style="font-size:0.85rem">Want to watch the fleet from your phone regardless of surface? The optional <a href="https://github.com/armodis/tmux-rc">tmux-rc</a> add-on reads your <code>tmux</code> panes and alerts you when any agent is blocked — see <button class="linklike" data-pane="build">Build it</button>.</p>
+    </section>
+
+    <!-- PORTFOLIO MGMT -->
+    <section class="pane" id="portfolio">
+      <p class="eyebrow">Component ◆</p>
+      <h2>Portfolio Mgmt</h2>
+      <p class="lede">The shared state plane, made concrete. A single <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects">GitHub Projects</a> board tracks work across all your repos — <span class="mono">app · infra · automation · planning · site</span>. It's the task graph agents claim from, audit, and sync against.</p>
+
+      <div class="note"><b>Copy a ready-made board.</b> Both boards below are GitHub Projects templates — open one and hit <b>Copy</b> to start pre-wired with the fields and lifecycle in this panel:
+        <div class="tmpl">
+          <a href="https://github.com/orgs/armodis-ai/projects/6">◆ Strategic Portfolio →</a>
+          <a href="https://github.com/orgs/armodis-ai/projects/7">◆ Personal Task Mgmt →</a>
+        </div>
+        No org of your own? Build it from the fields below by hand.</div>
+
+      <h3>Status lifecycle</h3>
+      <div class="stepper">
+        <span class="step">ToDo</span><span class="arw">→</span>
+        <span class="step">Backlog</span><span class="arw">→</span>
+        <span class="step lock">In Progress</span><span class="arw">→</span>
+        <span class="step">Pending Release</span><span class="arw">→</span>
+        <span class="step done">Done</span>
+      </div>
+      <p class="prose" style="font-size:0.88rem"><b style="color:var(--wire-ink)">In Progress</b> doubles as the queryable <b>claim lock</b> that stops two sessions grabbing the same issue. <b style="color:var(--ink)">Pending Release</b> is optional — use it for a repo where merged ≠ shipped; others go merged → Done.</p>
+
+      <h3>Work hierarchy — Category × Type</h3>
+      <p class="prose" style="font-size:0.88rem">Every item carries a <b>Category</b> (planning level) and <b>Type</b> (work kind). Themes are pillars with no issue of their own.</p>
+      <div class="ladder">
+        <div class="rung" data-i="0"><span class="lv">Theme</span><span class="meta">pillar — no issue · one of 11</span></div>
+        <div class="rung" data-i="1"><span class="lv">Milestone</span><span class="meta">date-driven commitment · Type Feature</span></div>
+        <div class="rung" data-i="2"><span class="lv">Epic</span><span class="meta">Type Feature</span></div>
+        <div class="rung" data-i="3"><span class="lv">User Story</span><span class="meta">Type Feature</span></div>
+        <div class="rung" data-i="4"><span class="lv">Task · Bug</span><span class="meta">leaf work · Type Task / Bug</span></div>
+      </div>
+
+      <h3>Themes — your product/platform pillars</h3>
+      <p class="prose" style="font-size:0.88rem">A single-select field: one Theme per item, so every issue rolls up to a pillar. Define the set that fits your product — the examples below are illustrative.</p>
+      <div class="themes">
+        <span class="theme-chip">Onboarding</span><span class="theme-chip">Core Product</span><span class="theme-chip">Data</span>
+        <span class="theme-chip">Experience</span><span class="theme-chip">Auth &amp; Security</span><span class="theme-chip">Platform</span>
+        <span class="theme-chip">Infra / Ops</span><span class="theme-chip">…your pillars</span>
+      </div>
+
+      <h3>Fields agents read most</h3>
+      <div class="card">
+        <ul class="repo-list" style="gap:0.5rem">
+          <li><span class="r">Type</span><span class="d">Bug · Feature · Task (org-level issue type)</span></li>
+          <li><span class="r">Priority</span><span class="d">P0 – P3 (single-select)</span></li>
+          <li><span class="r">Status</span><span class="d">the lifecycle above</span></li>
+          <li><span class="r">Theme</span><span class="d">one of your pillars</span></li>
+          <li><span class="r">Category</span><span class="d">the hierarchy level</span></li>
+        </ul>
+        <p class="prose" style="font-size:0.8rem; margin:0.8rem 0 0">Plus Effort, Iteration, Rank, WBS, Quarter, Business Value… (all standard <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects/understanding-fields/about-custom-fields">GitHub Projects custom fields</a>). <span style="color:var(--warn)">Iteration IDs are dynamic — always discover them live, never hardcode.</span></p>
+      </div>
+
+      <h3>What keeps it in sync</h3>
+      <div class="roster">
+        <div class="role"><div class="role__k">Automatic</div><p><b>GitHub Actions</b> — the happy path; status/theme/type rollups on issue &amp; PR events.</p></div>
+        <div class="role"><div class="role__k">On-demand</div><p><b>/project-sync</b> — audits board vs. real GitHub state, proposes corrections.</p></div>
+        <div class="role"><div class="role__k">On-demand</div><p><b>/audit-fields</b> — field-accuracy detector; auto-applies high-confidence fixes, surfaces the rest.</p></div>
+        <div class="role"><div class="role__k">Human</div><p><b>Manual</b> — PMs set initial Priority/Theme, assign iterations, disposition findings.</p></div>
+      </div>
+
+      <h3>Skills that operate on the board</h3>
+      <p class="prose" style="font-size:0.88rem">Your own <a href="https://code.claude.com/docs/en/skills">skills</a> drive the board. One workable shape: an analysis pipeline runs in sequence, then action skills mutate the board. (The names below are one instance's — yours will differ.)</p>
+      <div class="stepper">
+        <span class="step">gather</span><span class="arw">→</span>
+        <span class="step">analyze</span><span class="arw">→</span>
+        <span class="step">triage</span><span class="arw">→</span>
+        <span class="step lock">act on the board</span>
+      </div>
+      <div class="agents" style="margin-top:0.9rem">
+        <span class="agent">/pickup</span><span class="agent">/create-issue</span><span class="agent">/sync</span><span class="agent">…your own</span>
+      </div>
+      <p class="prose" style="font-size:0.82rem; margin-top:0.6rem">The template ships <em>no</em> skills — you author the few your workflow needs (a smart Claude session will draft them with you). The board model above is what they operate on.</p>
+
+      <div class="note"><b>Personal analog.</b> <code>~/personal/task-mgmt</code> mirrors this exact model against a second GitHub Projects board — same claim lock, selection policy, and <code>task-mgmt:*</code> function labels.</div>
+
+      <p class="prose" style="font-size:0.85rem">Every piece is standard <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects">GitHub Projects</a> + <a href="https://docs.github.com/en/actions">Actions</a> + Claude Code <a href="https://code.claude.com/docs/en/skills">skills</a> — reproducible on any GitHub org.</p>
+    </section>
+
+    <!-- BUILD IT YOURSELF -->
+    <section class="pane" id="build">
+      <p class="eyebrow">Build it</p>
+      <h2>Set it up yourself</h2>
+      <p class="lede">Nothing here is bespoke to one org. Each concern is assembled from public, documented features — clone the template repo, edit one config block, and run it.</p>
+
+      <h3>Start here — the template repo</h3>
+      <div class="docs">
+        <a class="doclink" href="https://github.com/armodis/claude-architecture-guide" style="border-left-color: var(--personal);">
+          <div class="doclink__t" style="color: var(--personal);">armodis/claude-architecture-guide</div>
+          <div class="doclink__u">github.com/armodis/claude-architecture-guide</div>
+          <div class="doclink__d">The guide, this brief, and a runnable <code>template/</code> — clone it and run <code>./setup.sh</code>.</div>
+        </a>
+      </div>
+
+      <h3>Hand it to Claude Code</h3>
+      <p class="prose" style="font-size:0.9rem">Easiest path: let a session drive. Open Claude Code (terminal, or <a href="https://claude.ai/code">claude.ai/code</a>) and paste:</p>
+      <div class="promptcard">
+        <div class="promptcard__label">▸ paste into Claude Code</div>
+        <p class="promptcard__body">Read https://github.com/armodis/claude-architecture-guide end to end, then inspect my current setup (~/.claude, dotfiles, git config, GitHub account). Walk me through adopting it — the domain organization, the config substrate, and optionally the project board. Treat it as a fresh setup or a migration, whichever fits, and confirm each phase before changing anything.</p>
+      </div>
+      <p class="prose" style="font-size:0.84rem; margin-top:0.7rem"><b>Fresh or migration — either works.</b> The agent inspects first; <code>setup.sh</code> backs up any real file before replacing it, so nothing is clobbered.</p>
+
+      <h3>Claude Code features</h3>
+      <div class="docs">
+        <a class="doclink" href="https://code.claude.com/docs/en/memory">
+          <div class="doclink__t">CLAUDE.md &amp; memory</div>
+          <div class="doclink__u">code.claude.com/docs/en/memory</div>
+          <div class="doclink__d">The layered instruction cascade, load order, and path-scoped rules — Concern 01.</div>
+        </a>
+        <a class="doclink" href="https://code.claude.com/docs/en/settings">
+          <div class="doclink__t">Settings</div>
+          <div class="doclink__u">code.claude.com/docs/en/settings</div>
+          <div class="doclink__d">settings.json scopes, permissions, model, plugins — Concern 03.</div>
+        </a>
+        <a class="doclink" href="https://code.claude.com/docs/en/sub-agents">
+          <div class="doclink__t">Subagents &amp; agent teams</div>
+          <div class="doclink__u">code.claude.com/docs/en/sub-agents</div>
+          <div class="doclink__d">The named-agent roster and parallel teams — Concern 02.</div>
+        </a>
+        <a class="doclink" href="https://code.claude.com/docs/en/skills">
+          <div class="doclink__t">Skills &amp; slash commands</div>
+          <div class="doclink__u">code.claude.com/docs/en/skills</div>
+          <div class="doclink__d">Packaged workflows in <code>.claude/skills/</code> — the pipeline and action skills.</div>
+        </a>
+        <a class="doclink" href="https://code.claude.com/docs/en/mcp">
+          <div class="doclink__t">MCP</div>
+          <div class="doclink__u">code.claude.com/docs/en/mcp</div>
+          <div class="doclink__d">Connect external tools; travels across surfaces — Concern 04.</div>
+        </a>
+        <a class="doclink" href="https://code.claude.com/docs/en/overview">
+          <div class="doclink__t">Surfaces overview</div>
+          <div class="doclink__u">code.claude.com/docs/en/overview</div>
+          <div class="doclink__d">CLI, Desktop, Web, mobile on one engine — Concern 04.</div>
+        </a>
+      </div>
+
+      <h3>Deployment &amp; coordination</h3>
+      <div class="docs">
+        <a class="doclink" href="https://www.gnu.org/software/stow/">
+          <div class="doclink__t">GNU Stow</div>
+          <div class="doclink__u">gnu.org/software/stow</div>
+          <div class="doclink__d">Symlink-farm manager that deploys the dotfiles repo into <code>~/</code>.</div>
+        </a>
+        <a class="doclink" href="https://git-scm.com/docs/git-worktree">
+          <div class="doclink__t">git worktree</div>
+          <div class="doclink__u">git-scm.com/docs/git-worktree</div>
+          <div class="doclink__d">Isolated checkouts so parallel agents don't collide — Concern 02.</div>
+        </a>
+        <a class="doclink" href="https://docs.github.com/en/issues/planning-and-tracking-with-projects">
+          <div class="doclink__t">GitHub Projects</div>
+          <div class="doclink__u">docs.github.com/en/issues/planning-and-tracking-with-projects</div>
+          <div class="doclink__d">The board that is the shared state plane — the Portfolio Mgmt component.</div>
+        </a>
+        <a class="doclink" href="https://docs.github.com/en/actions">
+          <div class="doclink__t">GitHub Actions</div>
+          <div class="doclink__u">docs.github.com/en/actions</div>
+          <div class="doclink__d">Automatic board sync on issue &amp; PR events.</div>
+        </a>
+      </div>
+
+      <h3>Optional add-on</h3>
+      <div class="docs">
+        <a class="doclink" href="https://github.com/armodis/tmux-rc" style="border-left-color: var(--personal);">
+          <div class="doclink__t" style="color: var(--personal);">tmux-rc — watch agents from your phone</div>
+          <div class="doclink__u">github.com/armodis/tmux-rc</div>
+          <div class="doclink__d">A local daemon (by Shapor Naghibzadeh) that reads a <code>tmux</code> pane and serves a phone dashboard — status, blocked-on-a-question alerts, tap-to-answer. Vendor-agnostic; independent of the substrate. Fork &amp; adapt.</div>
+        </a>
+      </div>
+
+      <p class="foot">This brief describes one person's setup, but every mechanism is public. Start at the <a href="https://code.claude.com/docs/en/memory">CLAUDE.md docs</a> and add layers as your work grows. · Docs: <a href="https://code.claude.com/docs/en/overview">code.claude.com/docs</a></p>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  (function () {
+    document.body.classList.add('js');
+    var items = Array.prototype.slice.call(document.querySelectorAll('[data-pane]'));
+    var panes = Array.prototype.slice.call(document.querySelectorAll('.pane'));
+    var navItems = Array.prototype.slice.call(document.querySelectorAll('.nav__item'));
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function activate(id, push) {
+      if (!document.getElementById(id)) { id = 'overview'; }
+      panes.forEach(function (p) { p.classList.toggle('is-active', p.id === id); });
+      navItems.forEach(function (n) { n.classList.toggle('is-active', n.getAttribute('data-pane') === id); });
+      if (push && location.hash !== '#' + id) { history.pushState(null, '', '#' + id); }
+      window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+    }
+
+    items.forEach(function (el) {
+      el.addEventListener('click', function () { activate(el.getAttribute('data-pane'), true); });
+    });
+    window.addEventListener('popstate', function () { activate((location.hash || '#overview').slice(1), false); });
+    activate((location.hash || '#overview').slice(1), false);
+  })();
+</script>
+</body>
+</html>
