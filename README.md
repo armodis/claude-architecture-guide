@@ -109,7 +109,7 @@ Three mechanisms resolve config, and they do **not** all walk the tree the same 
 
 | Mechanism | What it loads | Walk behavior |
 |-----------|---------------|---------------|
-| **CLAUDE.md instructions** | Every `CLAUDE.md` from cwd up to `~`, plus `~/.claude/CLAUDE.md` | **Merges all.** Walks up through every ancestor; closer wins on conflicts. |
+| **Instruction files** (`CLAUDE.md`, `AGENTS.md`) | Every `CLAUDE.md` from cwd up to `~`, plus `~/.claude/CLAUDE.md`; with the setting below, every `AGENTS.md` on the same walk | **Merges all.** Walks up through every ancestor; closer wins on conflicts. |
 | **Slash commands** (`.claude/commands/`) | Commands from a `.claude/` reachable from cwd | **Stops at the first project boundary.** A directory containing `CLAUDE.md` or `.git` is treated as a project root; the walk does not cross above it. |
 | **Auto-memory** (`~/.claude/projects/<encoded-cwd>/memory/`) | One directory, keyed by the exact launch cwd | **No walk.** Each cwd has its own memory bucket; subdirectories don't inherit a parent's memory. |
 
@@ -122,6 +122,14 @@ CLAUDE.md, by contrast, composes exactly as you'd hope. A session in `~/work/som
 3. `~/.claude/CLAUDE.md` — **universal layer** (formatting, communication style, working habits)
 
 **Domain-level CLAUDE.md goes at the domain root** (`~/work/CLAUDE.md`), not inside a `.claude/` subdir. The walk reliably picks up a root `CLAUDE.md` at each ancestor level; a `~/work/.claude/CLAUDE.md` does not load the same way. (Only `~/.claude/CLAUDE.md` — the universal user-level file — is special.)
+
+**AGENTS.md at the repo root, and the setting this architecture requires.** The repo-level instruction file should be `AGENTS.md`, the cross-vendor name Codex and other coding agents also read; Claude Code reads it too (since 2.1.277). But by default Claude Code reads `AGENTS.md` only as a *fallback* — when no `CLAUDE.md` (or `.claude/CLAUDE.md`, or `CLAUDE.local.md`) exists in the working directory **or any directory above it**. A domain-root `CLAUDE.md` is exactly such a file, so on a machine set up per this guide every repo's `AGENTS.md` is silently ignored unless you change one setting. Set **Project instructions** to `claude-md-and-agents-md` (`/config`, or in `~/.claude/settings.json`):
+
+```json
+{ "pluginConfigs": { "agents-md@builtin": { "options": { "instructionFiles": "claude-md-and-agents-md" } } } }
+```
+
+Then both files load on the walk, each directory's `CLAUDE.md` first and its `AGENTS.md` after. The template `settings.json` ships this, and `verify.sh` checks for it. The universal and domain layers stay `CLAUDE.md`: they are Claude Code concepts — Codex's global file is `~/.codex/AGENTS.md`, and it never reads above the repository root — so renaming them buys nothing. A relative `@AGENTS.md` import in a parent `CLAUDE.md` resolves against that file's own directory, not the repo, so it cannot stand in for the setting.
 
 Memory follows the launch cwd. Launch from `~/work/some-repo/` and memory comes from the bucket keyed to that path; launch from `~/work/` and it's a different bucket. Pick one launch point per context and stay consistent, or you'll scatter memory across buckets.
 
@@ -143,7 +151,7 @@ The system can't enforce that. But it can make the right thing easy: per-domain 
 
 ## The Three-Layer Pattern
 
-Universal → Domain → Repo. Each layer adds specificity — but remember from Config Resolution that the layers compose cleanly for **CLAUDE.md** while **skills resolve from the repo root only**.
+Universal → Domain → Repo. Each layer adds specificity — but remember from Config Resolution that the layers compose cleanly for **instruction files** (with the `claude-md-and-agents-md` setting) while **skills resolve from the repo root only**.
 
 **Universal layer (`~/.claude/`)** — applies everywhere. Things true regardless of context:
 
@@ -158,12 +166,12 @@ Universal → Domain → Repo. Each layer adds specificity — but remember from
 
 (Domain-level **skills** don't resolve via the walk — the repo boundary blocks them. If you want a skill available across a domain, put it in the domain's "hub" repo and launch from there, or aggregate skills into a domain-root `.claude/` and launch from the domain root as a deliberate convenience — see below.)
 
-**Repo layer (`<repo>/.claude/` + `<repo>/CLAUDE.md`)** — applies to one repo, and is where skills actually live:
+**Repo layer (`<repo>/.claude/` + `<repo>/AGENTS.md`)** — applies to one repo, and is where skills actually live:
 
 - Skills (`.claude/commands/`) and subagents (`.claude/agents/`) — committed in the repo, standard Claude Code layout, found when you launch from inside the repo
-- Repo context in `CLAUDE.md`
+- Repo context in `AGENTS.md` — the cross-vendor file; a `CLAUDE.md` still works for Claude alone, but `AGENTS.md` is what Codex and the others read too
 
-The rule of thumb for CLAUDE.md: **put a setting at the highest layer where it's still true.** For skills, there's effectively one place: the repo whose work they operate on. Skills that span repos live in the repo you launch from to do that cross-repo work (a planning/hub repo), referencing siblings by relative path (`../other-repo/...`).
+The rule of thumb for instruction files: **put a setting at the highest layer where it's still true.** For skills, there's effectively one place: the repo whose work they operate on. Skills that span repos live in the repo you launch from to do that cross-repo work (a planning/hub repo), referencing siblings by relative path (`../other-repo/...`).
 
 ### Optional: a domain-root skill aggregation
 
@@ -202,7 +210,7 @@ A typical layout for two domains:
     └── ...
 ```
 
-Adapt names to your preferences. The load-bearing shape: universal config at `~/`, a root `CLAUDE.md` at each domain dir, and **skills committed at each repo's own `.claude/`** (launch from inside the repo). The domain `.claude/` aggregation is an optional convenience for cross-repo launches.
+Adapt names to your preferences. The load-bearing shape: universal config at `~/`, a root `CLAUDE.md` at each domain dir, an `AGENTS.md` at each repo root, and **skills committed at each repo's own `.claude/`** (launch from inside the repo). The domain `.claude/` aggregation is an optional convenience for cross-repo launches.
 
 ## GitHub Home Strategy
 
@@ -305,7 +313,7 @@ When you (or a future you, or a future agent) want to "update my global settings
 | Domain-level Claude config (tone, conventions) | `dotfiles/claude-domains/<domain>/CLAUDE.md` → stows to `~/<domain>/CLAUDE.md` | No |
 | Auto-memory (versioned) | `dotfiles/claude-user/.claude/projects/<encoded-cwd>/memory/` | No |
 | Per-repo skills / subagents | `<repo>/.claude/{commands,agents}/` (lives in the repo, committed there) | No |
-| Per-repo Claude context | `<repo>/CLAUDE.md` (lives in the repo) | No |
+| Per-repo agent context | `<repo>/AGENTS.md` (lives in the repo; read by Claude Code with the `claude-md-and-agents-md` setting, and by Codex) | No |
 | GitHub notification routing | GitHub Settings UI (manual) | N/A |
 
 **The routing rule:** anything in `dotfiles/` requires commit + push to sync across machines. Anything outside dotfiles is scoped to where it lives.
@@ -338,7 +346,7 @@ Every repo (across every domain) follows the same layout for non-code artifacts:
 ```
 <repo>/
 ├── README.md            # Orientation: what this repo is, layout, doc pointers (humans first)
-├── CLAUDE.md            # Agent behavior conventions for this repo
+├── AGENTS.md            # Agent behavior conventions for this repo (cross-vendor name)
 ├── STATUS.md            # Handoff: what just happened + what's next + where to find things
 ├── docs/
 │   ├── analysis/        # Planner outputs: <YYYY-MM-DD-topic>.md
@@ -353,10 +361,10 @@ Every repo (across every domain) follows the same layout for non-code artifacts:
 | Doc | Audience | What it answers | Volatility |
 |---|---|---|---|
 | **README.md** | Humans landing on the repo (GitHub web, fresh clone, future-you) | What is this? Who is it for? Where do the other docs live? | Low — stable framing |
-| **CLAUDE.md** | Claude agents in this repo | How should agents behave here? What conventions apply? | Low/medium — stable instructions |
+| **AGENTS.md** | Coding agents in this repo (Claude Code, Codex, …) | How should agents behave here? What conventions apply? | Low/medium — stable instructions |
 | **STATUS.md** | Next session / next agent | Where are we right now? What handoff signals? What's next? | High — updated every session |
 
-They cover orthogonal concerns: orientation (README), behavior (CLAUDE), state (STATUS). Don't conflate them — when STATUS keeps growing past a screen, the parts that aren't volatile probably belong in README.
+They cover orthogonal concerns: orientation (README), behavior (AGENTS), state (STATUS). Don't conflate them — when STATUS keeps growing past a screen, the parts that aren't volatile probably belong in README.
 
 ### Commit message prefixes
 

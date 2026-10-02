@@ -28,6 +28,12 @@ check_symlink() {
 section "Layer 0 — universal ~/.claude"
 check_symlink "$HOME/.claude/CLAUDE.md"
 [ -e "$HOME/.claude/settings.json" ] && ok "~/.claude/settings.json present" || ko "~/.claude/settings.json missing"
+# A domain-root CLAUDE.md suppresses every repo's AGENTS.md unless Claude Code is told to read both.
+if grep -q '"instructionFiles": *"claude-md-and-agents-md"' "$HOME/.claude/settings.json" 2>/dev/null; then
+  ok "Project instructions = claude-md-and-agents-md (repo AGENTS.md files load beneath the domain CLAUDE.md)"
+else
+  ko "settings.json lacks pluginConfigs.agents-md@builtin.options.instructionFiles = claude-md-and-agents-md — repo AGENTS.md files are being ignored"
+fi
 
 # --- 2. Universal layer is domain-neutral ---
 section "Layer 0 is domain-neutral (no single domain bleeds in)"

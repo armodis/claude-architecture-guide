@@ -341,7 +341,7 @@
         <div class="connector c2">inherits ▾</div>
         <div class="layer" data-depth="2">
           <span class="layer__tag">Layer 2 · Project / repo — when launched here</span>
-          <p class="layer__path">~/work/app/CLAUDE.md</p>
+          <p class="layer__path">~/work/app/AGENTS.md</p>
           <p class="layer__desc">Repo context: pipeline, board, multi-agent workflow. Committed in the repo, not in dotfiles. Nests further (app/backend/, app/ui/).</p>
           <p class="layer__src">lives in the work/app repo clone</p>
         </div>
@@ -353,7 +353,7 @@
         <div class="domain domain--work">
           <p class="domain__name"><span class="dot"></span>Work</p>
           <p class="domain__root">~/work/</p>
-          <p class="domain__note">Day-job work. Each sub-dir is a separate repository clone with its own CLAUDE.md.</p>
+          <p class="domain__note">Day-job work. Each sub-dir is a separate repository clone with its own AGENTS.md.</p>
           <ul class="repo-list">
             <li><span class="r">app/</span><span class="d">main application</span></li>
             <li><span class="r">infra/</span><span class="d">infrastructure</span></li>
@@ -411,7 +411,7 @@
         <div class="req"><div class="req__k">Decisions</div><div class="req__v">For a <b>reversible</b> call that would block on a human, run a Green Doc (direction) → Blue Doc (execution) review and proceed, recording the outcome.</div></div>
         <div class="req req--warn"><div class="req__k">Escalate</div><div class="req__v">Always hand to a <b>human</b> for irreversible / outward-facing actions — deleting non-recreatable data, force-push, external comms, editing others' issues.</div></div>
       </div>
-      <p class="prose" style="font-size:0.85rem">These are project conventions written into the repo's own <a href="https://code.claude.com/docs/en/memory">CLAUDE.md</a> — the mechanism is public; the policy is yours to define.</p>
+      <p class="prose" style="font-size:0.85rem">These are project conventions written into the repo's own <a href="https://code.claude.com/docs/en/memory#agents-md">AGENTS.md</a> — the mechanism is public; the policy is yours to define.</p>
     </section>
 
     <!-- PORTABILITY -->
@@ -459,7 +459,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
         </div>
         <div class="plane plane--repo">
           <div class="plane__k">Repo-committed</div>
-          <div class="plane__p">&lt;repo&gt;/.claude/ + CLAUDE.md</div>
+          <div class="plane__p">&lt;repo&gt;/.claude/ + AGENTS.md</div>
           <div class="plane__d">Committed in each repo, so it travels with the clone to <em>any</em> surface — including web / cloud Claude Code — via standard project resolution.</div>
         </div>
       </div>
