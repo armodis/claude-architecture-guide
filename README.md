@@ -349,12 +349,18 @@ Every repo (across every domain) follows the same layout for non-code artifacts:
 ├── AGENTS.md            # Agent behavior conventions for this repo (cross-vendor name)
 ├── STATUS.md            # Handoff: what just happened + what's next + where to find things
 ├── docs/
-│   ├── analysis/        # Planner outputs: <YYYY-MM-DD-topic>.md
-│   ├── plans/           # Coordinator outputs: <topic>.md
+│   ├── analysis/        # Planner outputs: <YYYY-MM-DD-topic>.md; dated records, never edited after the fact
+│   │   └── archive/     # Superseded records (an earlier version of a gate doc, a plan a ruling replaced)
+│   ├── plans/           # Coordinator outputs: <topic>.md (living docs, no date prefix)
+│   │   └── archive/     # Superseded plans
 │   ├── decisions/       # ADRs: <NNNN-title>.md
 │   └── runbooks/        # Operational procedures
 └── (code / data / whatever)
 ```
+
+**Superseded records move, they don't stay.** A record that a later version replaces (Direction v1 once v2 is ruled, a plan a ruling overturned) moves to the sibling `archive/` directory in the same commit that lands its replacement, and its first lines point forward to what replaced it. A status line reading "SUPERSEDED" is not enough: a fresh session reading the directory cannot tell which file is current and will read both (observed 2026-10-09: a cold-start test session read a superseded Direction beside its replacement and carried one stale clause into an otherwise correct answer). The current version keeps the plain name; nothing else in the repo should link into `archive/` except the replacement's own "written from" line.
+
+**Scratch is not a record.** Anything a session writes while working (probe raw output, agent briefs, intermediate JSON) goes under a gitignored scratch root (`<repo>/reports/tmp/<run-name>/` or the harness's scratchpad), never under `docs/`. Findings worth keeping are promoted into `docs/analysis/` as dated records by their author, on the operator's go; everything else is regenerable and stays unversioned.
 
 ### Three-role doc separation
 
