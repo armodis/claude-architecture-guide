@@ -13,44 +13,69 @@ source "$SUBSTRATE/substrate.conf"
 pass=0; fail=0; fail_msgs=()
 # Plain assignment, not ((n++)): ((0)) returns status 1, which turns
 # `check && ok || ko` into a pass AND a failure for the first check.
-ok() { echo "  ✓ $1"; pass=$((pass + 1)); }
-ko() { echo "  ✗ $1"; fail=$((fail + 1)); fail_msgs+=("$1"); }
+ok()   { echo "  ✓ $1"; pass=$((pass + 1)); }
+ko()   { echo "  ✗ $1"; fail=$((fail + 1)); fail_msgs+=("$1"); }
+note() { echo "  – $1"; }
 section() { echo ""; echo "== $1 =="; }
 
-# Pass only when $path resolves to the expected file in template/ — a real
-# file or a link to somewhere else means setup.sh hasn't wired it.
+# Absolute path with every link resolved; empty if it can't be resolved.
+# macOS before 12.3 has no `readlink -f`, so fall back to realpath.
+resolve() {
+  readlink -f -- "$1" 2>/dev/null || realpath -- "$1" 2>/dev/null || true
+}
+
+# Pass only when $path resolves to the expected file in template/ — through a
+# link on the file itself or on a parent directory. A real file, a link to
+# somewhere else, or a dangling link means setup.sh hasn't wired it.
 check_linked() {
-  local path="$1" want="$2" target
-  target=$(readlink -f "$path" 2>/dev/null)
-  if [ ! -e "$path" ]; then
-    ko "$path missing"
-  elif [ ! -L "$path" ]; then
-    ko "$path is a real file, not linked to ${want#"$SUBSTRATE"/}"
-  elif [ "$target" != "$(readlink -f "$want")" ]; then
+  local path="$1" want="$2" target wanted
+  if [ -L "$path" ] && [ ! -e "$path" ]; then
+    ko "$path -> $(readlink -- "$path") (dangling link)"; return
+  fi
+  if [ ! -e "$path" ]; then ko "$path missing"; return; fi
+  target=$(resolve "$path"); wanted=$(resolve "$want")
+  if [ -z "$target" ] || [ -z "$wanted" ]; then
+    ko "$path: can't resolve links (needs readlink -f or realpath)"
+  elif [ "$target" = "$wanted" ]; then
+    ok "$path -> ${want#"$SUBSTRATE"/}"
+  elif [ -L "$path" ]; then
     ko "$path -> $target (expected ${want#"$SUBSTRATE"/})"
   else
-    ok "$path -> ${want#"$SUBSTRATE"/}"
+    ko "$path is a real file, not linked to ${want#"$SUBSTRATE"/}"
   fi
 }
 
-# Every file in a stow package must be linked at its place under ~.
+# Files stow never links (its default ignore list), relative to the package.
+stow_ignored() {
+  local rel="$1" base="${1##*/}"
+  case "/$rel/" in */.git/*|*/.svn/*|*/.hg/*|*/CVS/*|*/RCS/*|*/_darcs/*) return 0 ;; esac
+  case "$base" in .gitignore|.gitmodules|.cvsignore|*~|\#*\#|.\#*|*,v) return 0 ;; esac
+  case "$rel" in README*|LICENSE*|COPYING) return 0 ;; esac   # top level only
+  return 1
+}
+
+# Every file stow links from a package must resolve at its place under ~.
 check_package() {
-  local pkg="$1" f
+  local pkg="$1" f rel n=0
+  if [ ! -d "$TEMPLATE/$pkg" ]; then ko "template/$pkg missing"; return; fi
+  [ -f "$TEMPLATE/$pkg/.stow-local-ignore" ] && \
+    note "template/$pkg has .stow-local-ignore; files it excludes will report missing"
   while IFS= read -r -d '' f; do
-    check_linked "$HOME/${f#"$TEMPLATE/$pkg"/}" "$f"
+    rel="${f#"$TEMPLATE/$pkg"/}"
+    stow_ignored "$rel" && continue
+    [ "$rel" = .stow-local-ignore ] && continue
+    n=$((n + 1))
+    check_linked "$HOME/$rel" "$f"
   done < <(find "$TEMPLATE/$pkg" -type f -print0)
+  [ "$n" -gt 0 ] || ko "template/$pkg has no files to link"
 }
 
 # --- 1. Layer 0: universal config ---
 section "Layer 0 — universal ~/.claude"
-if [ -d "$TEMPLATE/claude-user" ]; then
-  check_package claude-user
-else
-  ko "template/claude-user missing"
-fi
+check_package claude-user
 # A domain-root CLAUDE.md suppresses every repo's AGENTS.md unless Claude Code is told to read both.
 if [ ! -r "$HOME/.claude/settings.json" ]; then
-  ko "~/.claude/settings.json missing — can't check the AGENTS.md setting"
+  note "AGENTS.md setting not checked: ~/.claude/settings.json is missing (reported above)"
 elif grep -q '"instructionFiles": *"claude-md-and-agents-md"' "$HOME/.claude/settings.json"; then
   ok "Project instructions = claude-md-and-agents-md (repo AGENTS.md files load beneath the domain CLAUDE.md)"
 else
@@ -60,44 +85,63 @@ fi
 # --- 2. Universal layer is domain-neutral ---
 section "Layer 0 is domain-neutral (no single domain bleeds in)"
 if [ ! -r "$HOME/.claude/CLAUDE.md" ]; then
-  ko "~/.claude/CLAUDE.md missing — can't check it for domain bleed"
+  note "domain bleed not checked: ~/.claude/CLAUDE.md is missing (reported above)"
 else
   leak=""
-  for d in "${DOMAINS[@]}"; do
+  for d in ${DOMAINS[@]+"${DOMAINS[@]}"}; do
     # A universal file shouldn't hard-code any one domain's private nouns.
-    grep -qiw "$d" "$HOME/.claude/CLAUDE.md" && leak="$leak $d"
+    grep -qiwF -- "$d" "$HOME/.claude/CLAUDE.md" && leak="$leak $d"
   done
   if [ -z "$leak" ]; then
     ok "universal CLAUDE.md names no specific domain"
   else
-    echo "  – universal CLAUDE.md references:$leak (fine if intentional)"
+    note "universal CLAUDE.md references:$leak (fine if intentional)"
   fi
 fi
 
 # --- 3. Layer 1: per-domain roots ---
 section "Layer 1 — domain roots"
-for d in "${DOMAINS[@]}"; do
-  check_linked "$HOME/$d/CLAUDE.md" "$TEMPLATE/claude-domains/$d/CLAUDE.md"
+if [ "${#DOMAINS[@]}" -eq 0 ]; then
+  note "no DOMAINS configured"
+fi
+for d in ${DOMAINS[@]+"${DOMAINS[@]}"}; do
+  src="$TEMPLATE/claude-domains/$d/CLAUDE.md"
+  if [ ! -f "$src" ]; then
+    ko "template/claude-domains/$d/CLAUDE.md missing — create it, or remove '$d' from DOMAINS"
+  else
+    check_linked "$HOME/$d/CLAUDE.md" "$src"
+  fi
 done
 
 # --- 4. Dotfile packages ---
 if [ "${#STOW_PACKAGES[@]}" -gt 0 ]; then
   section "Dotfile packages"
   for pkg in "${STOW_PACKAGES[@]}"; do
-    if [ -d "$TEMPLATE/$pkg" ]; then
-      check_package "$pkg"
-    else
-      ko "template/$pkg missing (listed in STOW_PACKAGES)"
-    fi
+    check_package "$pkg"
   done
 fi
 
-# --- 5. GitHub auth (optional, for the orchestration layer) ---
+# --- 5. Skill overlays ---
+if [ "${#SKILL_OVERLAYS[@]}" -gt 0 ]; then
+  section "Skill overlays"
+  for spec in "${SKILL_OVERLAYS[@]}"; do
+    domain="${spec%%:*}" src="${spec#*:}"
+    if [ ! -d "$src" ]; then ko "overlay source missing: $src"; continue; fi
+    n=0
+    while IFS= read -r -d '' f; do
+      n=$((n + 1))
+      check_linked "$HOME/$domain/.claude/${f#"$src"/}" "$f"
+    done < <(find "$src" -type f -print0)
+    [ "$n" -gt 0 ] || ko "overlay source $src has no files"
+  done
+fi
+
+# --- 6. GitHub auth (optional, for the orchestration layer) ---
 section "GitHub auth (optional)"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   ok "gh authenticated as $(gh api /user --jq '.login' 2>/dev/null)"
 else
-  echo "  – gh not authenticated (only needed for the GitHub-as-substrate workflow)"
+  note "gh not authenticated (only needed for the GitHub-as-substrate workflow)"
 fi
 
 # --- Summary ---
