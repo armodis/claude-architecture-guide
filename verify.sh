@@ -5,31 +5,53 @@
 set -uo pipefail
 
 SUBSTRATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE="$SUBSTRATE/template"
 # Same config setup.sh uses — single source of truth.
 # shellcheck source=substrate.conf
 source "$SUBSTRATE/substrate.conf"
 
 pass=0; fail=0; fail_msgs=()
-ok() { echo "  ✓ $1"; ((pass++)); }
-ko() { echo "  ✗ $1"; ((fail++)); fail_msgs+=("$1"); }
+# Plain assignment, not ((n++)): ((0)) returns status 1, which turns
+# `check && ok || ko` into a pass AND a failure for the first check.
+ok() { echo "  ✓ $1"; pass=$((pass + 1)); }
+ko() { echo "  ✗ $1"; fail=$((fail + 1)); fail_msgs+=("$1"); }
 section() { echo ""; echo "== $1 =="; }
 
-check_symlink() {
-  local path="$1"
-  if [ -L "$path" ]; then
-    local target; target=$(readlink -f "$path")
-    if [ -e "$target" ]; then ok "$path -> $target"; else ko "$path -> $target (target missing)"; fi
+# Pass only when $path resolves to the expected file in template/ — a real
+# file or a link to somewhere else means setup.sh hasn't wired it.
+check_linked() {
+  local path="$1" want="$2" target
+  target=$(readlink -f "$path" 2>/dev/null)
+  if [ ! -e "$path" ]; then
+    ko "$path missing"
+  elif [ ! -L "$path" ]; then
+    ko "$path is a real file, not linked to ${want#"$SUBSTRATE"/}"
+  elif [ "$target" != "$(readlink -f "$want")" ]; then
+    ko "$path -> $target (expected ${want#"$SUBSTRATE"/})"
   else
-    ko "$path (not a symlink)"
+    ok "$path -> ${want#"$SUBSTRATE"/}"
   fi
+}
+
+# Every file in a stow package must be linked at its place under ~.
+check_package() {
+  local pkg="$1" f
+  while IFS= read -r -d '' f; do
+    check_linked "$HOME/${f#"$TEMPLATE/$pkg"/}" "$f"
+  done < <(find "$TEMPLATE/$pkg" -type f -print0)
 }
 
 # --- 1. Layer 0: universal config ---
 section "Layer 0 — universal ~/.claude"
-check_symlink "$HOME/.claude/CLAUDE.md"
-[ -e "$HOME/.claude/settings.json" ] && ok "~/.claude/settings.json present" || ko "~/.claude/settings.json missing"
+if [ -d "$TEMPLATE/claude-user" ]; then
+  check_package claude-user
+else
+  ko "template/claude-user missing"
+fi
 # A domain-root CLAUDE.md suppresses every repo's AGENTS.md unless Claude Code is told to read both.
-if grep -q '"instructionFiles": *"claude-md-and-agents-md"' "$HOME/.claude/settings.json" 2>/dev/null; then
+if [ ! -r "$HOME/.claude/settings.json" ]; then
+  ko "~/.claude/settings.json missing — can't check the AGENTS.md setting"
+elif grep -q '"instructionFiles": *"claude-md-and-agents-md"' "$HOME/.claude/settings.json"; then
   ok "Project instructions = claude-md-and-agents-md (repo AGENTS.md files load beneath the domain CLAUDE.md)"
 else
   ko "settings.json lacks pluginConfigs.agents-md@builtin.options.instructionFiles = claude-md-and-agents-md — repo AGENTS.md files are being ignored"
@@ -37,31 +59,38 @@ fi
 
 # --- 2. Universal layer is domain-neutral ---
 section "Layer 0 is domain-neutral (no single domain bleeds in)"
-leak=""
-for d in "${DOMAINS[@]}"; do
-  # A universal file shouldn't hard-code any one domain's private nouns.
-  grep -qiw "$d" "$HOME/.claude/CLAUDE.md" 2>/dev/null && leak="$leak $d"
-done
-if [ -z "$leak" ]; then
-  ok "universal CLAUDE.md names no specific domain"
+if [ ! -r "$HOME/.claude/CLAUDE.md" ]; then
+  ko "~/.claude/CLAUDE.md missing — can't check it for domain bleed"
 else
-  echo "  – universal CLAUDE.md references:$leak (fine if intentional)"
+  leak=""
+  for d in "${DOMAINS[@]}"; do
+    # A universal file shouldn't hard-code any one domain's private nouns.
+    grep -qiw "$d" "$HOME/.claude/CLAUDE.md" && leak="$leak $d"
+  done
+  if [ -z "$leak" ]; then
+    ok "universal CLAUDE.md names no specific domain"
+  else
+    echo "  – universal CLAUDE.md references:$leak (fine if intentional)"
+  fi
 fi
 
 # --- 3. Layer 1: per-domain roots ---
 section "Layer 1 — domain roots"
 for d in "${DOMAINS[@]}"; do
-  check_symlink "$HOME/$d/CLAUDE.md"
+  check_linked "$HOME/$d/CLAUDE.md" "$TEMPLATE/claude-domains/$d/CLAUDE.md"
 done
 
 # --- 4. Dotfile packages ---
-section "Dotfile packages"
-for pkg in "${STOW_PACKAGES[@]}"; do
-  case "$pkg" in
-    bash) for f in .bashrc .bash_aliases .bash_functions; do [ -e "$HOME/$f" ] && ok "$f present" || true; done ;;
-    git)  for f in .gitconfig; do [ -e "$HOME/$f" ] && ok "$f present" || true; done ;;
-  esac
-done
+if [ "${#STOW_PACKAGES[@]}" -gt 0 ]; then
+  section "Dotfile packages"
+  for pkg in "${STOW_PACKAGES[@]}"; do
+    if [ -d "$TEMPLATE/$pkg" ]; then
+      check_package "$pkg"
+    else
+      ko "template/$pkg missing (listed in STOW_PACKAGES)"
+    fi
+  done
+fi
 
 # --- 5. GitHub auth (optional, for the orchestration layer) ---
 section "GitHub auth (optional)"
