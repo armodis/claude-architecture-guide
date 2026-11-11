@@ -486,9 +486,21 @@ Most work won't be this deep. Use hierarchy when it earns its keep.
 
 When a PR closes an issue, use `closes #N`, `fixes #N`, or `resolves #N` in the body. GitHub populates `closingIssuesReferences` and (if you set up GitHub Actions for it) the Status field auto-transitions on PR merge. Plain `#N` mentions are informational — no automation.
 
-### One board per domain, or one shared board?
+### Organization, board, or repo?
 
-Start with **one shared board** if you're new to this. Easier to maintain, simpler mental model. As one domain accumulates enough volume that the shared board feels cluttered, spin off a domain-specific board.
+Three containers, three questions. Decide them in this order.
+
+| Container | Use a separate one for | Signal it's time |
+|---|---|---|
+| **Organization** | Each business, or anything that may change hands | A distinct legal entity; a product you may sell or spin off; outside collaborators, investors or customers who need their own access; regulated data (health, financial) that calls for its own access controls and audit |
+| **Project board** | Each product, plus one for company-wide work | Its own roadmap, priorities and Themes. Two products that share nothing would mix unrelated Themes in one dropdown |
+| **Repo** | Each product, as one repo (a monorepo for that product) | Split a piece out only when several products share it, or it ships on its own schedule |
+
+**Boards.** A business with one product can run on one board. Once it has two products, give each product its own board and keep a company board for what spans them: operations tooling, strategy, Objectives and Key Results. A company Initiative can parent a product Epic, since both boards belong to the same organization. With "Auto-add sub-issues" on, linking a product Epic under a company item pulls the Epic's whole subtree onto the company board too, so decide which board should hold the detail before you link. For personal domains, start with **one shared board** and spin off a domain board when the shared one feels cluttered.
+
+**Repos: monorepo or many repos.** A monorepo keeps all of a product's code in one repository: backend, frontend, rules, docs and tests. A change across parts lands as one pull request, issues and history live in one place, and agents find everything from one checkout. Its costs show at scale: the repo grows large, access is all or nothing, and builds eventually need tooling to test only what changed. Many repos give each part separate ownership, access and release schedules, at the cost of coordinating changes across repos and keeping versions in step. For a small team where agents do much of the work, one repo per product is the default.
+
+**Moving later.** GitHub transfers repos between organizations with their history, issues and pull requests. Project boards can't change owner: copy the board to the new owner and add the items again. So start a product inside its business's organization and move it out when a signal above appears.
 
 ## Templating Project Boards
 
@@ -516,6 +528,8 @@ The copy inherits fields, views, and field options. Items don't copy — the new
 - Use `updateProjectV2Field` (with `singleSelectOptions`) to change Theme options to the new vocabulary
 - Use the same mutation to simplify Status (drop values you don't need) — remember it replaces the full list
 - Leave Priority, Type, Effort, Start/End as-is
+- Include each kept option's `id` in the `singleSelectOptions` list, so the option keeps its identity and the items set to it
+- Turn on the "Auto-add to project" workflow in the web UI (board menu → Workflows). Copies don't carry it, and the API can read and delete workflows but not create or enable them
 
 This pattern saves significant manual configuration and ensures consistency across boards.
 
