@@ -60,7 +60,8 @@ def read_log(run):
                 rows.append((parse_ts(ts), step.strip(), sid.strip()))
             except ValueError:
                 sys.exit(f"{path}:{n}: expected <iso-time>TAB<step>TAB<session-id>, got {line!r}")
-    return sorted(rows)
+    # by time; marks in the same second keep their order in the file
+    return [r for _, r in sorted(enumerate(rows), key=lambda x: (x[1][0], x[0]))]
 
 
 def mark(run, step, at=None):
@@ -107,7 +108,8 @@ def report(run):
         sys.exit(f"no steps marked in {run}/cost-log.tsv")
     # Each step runs until the next mark of any kind. A step marked after `closed` reopens the
     # run, so the run ends at the last mark only when that mark is `closed`.
-    marks = sorted(log, key=lambda r: r[0])
+    marks = log  # read_log sorts by time, keeping file order within a second
+    closed = marks[-1][0] if marks[-1][1] == CLOSED else None
     windows = [(ts, marks[i + 1][0] if i + 1 < len(marks) else now(), step)
                for i, (ts, step, _) in enumerate(marks) if step != CLOSED]
 
