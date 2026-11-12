@@ -159,6 +159,21 @@ else
   note "gh not authenticated (only needed for the GitHub-as-substrate workflow)"
 fi
 
+# --- 7. GitHub matches github.json (when there is one) ---
+if [ -f "$SUBSTRATE/github.json" ]; then
+  section "GitHub (provision.py rehearsal)"
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    ko "github.json exists but gh is not logged in"
+  else
+    out=$(python3 "$SUBSTRATE/provision.py" "$SUBSTRATE/github.json" 2>&1); rc=$?
+    case $rc in
+      0) ok "organizations, repos, boards and board config match github.json" ;;
+      2) ko "GitHub doesn't match github.json yet:"; printf '%s\n' "$out" | grep -E '^  [·!] ' ;;
+      *) ko "provision.py failed: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+  fi
+fi
+
 # --- Summary ---
 echo ""; echo "==========================="
 echo "Passed: $pass    Failed: $fail"

@@ -12,11 +12,11 @@
 
 The fastest way to adopt this is to let a Claude Code session drive. Open Claude Code (terminal, or [claude.ai/code](https://claude.ai/code) on the web) and paste:
 
-> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
+> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and the **GitHub side** (organizations, repos and project boards). Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
-The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
+The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and [`provision.py`](provision.py) puts the GitHub side in place: organizations, repos, project boards and the board config ([Setting up GitHub](#setting-up-github)). The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
 
-**Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and `gh` authenticated (only for the board workflow).
+**Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), Python 3, `git` with `user.name` and `user.email` set, and [`gh`](https://cli.github.com/) logged in with the `repo`, `project`, `read:org` and `workflow` scopes (`gh auth login`, then `gh auth refresh -s project,read:org,workflow`).
 
 ***
 
@@ -35,16 +35,23 @@ This repo is both the guide and a runnable template. To stand up the architectur
 ```bash
 git clone https://github.com/armodis/claude-architecture-guide
 cd claude-architecture-guide
-$EDITOR setup.sh      # edit the CONFIG block: DOMAINS=(work personal ...)
-./setup.sh            # stow + symlink into ~/ (backs up any real files first)
-./verify.sh           # confirm the wiring
+$EDITOR substrate.conf          # your domains: DOMAINS=(work personal ...)
+./setup.sh                      # stow + symlink into ~/: instructions, design loop, board command and skills
+cp github.example.json github.json
+$EDITOR github.json             # your organizations, repos and boards
+./provision.py                  # rehearse: what exists, what would be created
+./provision.py --live           # create the repos and boards, and write the board config
+./verify.sh                     # confirm the wiring, and that GitHub matches github.json
 ```
+
+At the end, every organization in `github.json` has its repos (with this guide's layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup` and `board-setup` skills work in every repo.
 
 What ships alongside this guide:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
+- **[`provision.py`](provision.py)** — creates what's missing on GitHub from [`github.example.json`](github.example.json) (copied to `github.json`, which git ignores). Rehearses by default; `--live` applies. Re-runnable.
 - **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`) and an example board config (into `~/.config/board/`).
-- **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots).
+- **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots, and a `provision.py` rehearsal when `github.json` exists).
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
 
@@ -52,19 +59,27 @@ Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https:
 
 ***
 
-## Setting up the project board (optional)
+## Setting up GitHub
 
-The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent Claude sessions claim work and stay coordinated.
+The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent Claude sessions claim work and stay coordinated. [`provision.py`](provision.py) sets up the GitHub side from `github.json`: one entry per owner (an organization or your user account), each with its repos and boards. Decide the shape first with [Organization, board, or repo?](#organization-board-or-repo): one organization per business, one board per product plus a company board, one repo per product.
 
-**Fastest path — copy a ready-made template.** Three GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) are published with the fields and lifecycle this guide describes; open one and hit **Copy** to start pre-wired:
+For each owner, `provision.py`:
 
-- **[[TEMPLATE] Strategic Portfolio](https://github.com/orgs/armodis-ai/projects/6)** — the portfolio/work board.
+1. **Checks the organization exists.** GitHub has no API to create one, so the report links the page where you create it ([github.com/account/organizations/new](https://github.com/account/organizations/new)); run it again afterwards.
+2. **Creates each missing repo**, private unless `"public": true`, and pushes the [File Conventions](#file-conventions) layout from a local clone at the repo's `path`: README, AGENTS.md, STATUS.md, `design/`, `docs/decisions/` and `.gitignore`, plus `backend/`, `frontend/`, `scripts/` and `.env.example` for `"kind": "product"`. It adds the `test-fixture` label.
+3. **Copies each missing board** from its template, links the board's repos, and adds its Themes (keeping existing options and their ids).
+4. **Checks the built-in workflows.** GitHub has no API to enable them, and a copy doesn't carry "Auto-add to project", so the report lists what's off with a link to that board's Workflows page. Set them as in step 4 of the checklist below, then run it again.
+5. **Adds each board to the `board` config**, `~/.config/board/boards.json`, with its hierarchy read from the board's Category field. Boards already in the config are left as they are.
+
+It finds what exists by name, creates only what's missing, and exits 0 once everything matches `github.json`, or 2 while steps remain.
+
+**The templates** it copies from are public GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) with the fields and lifecycle this guide describes. You can also open one and choose **Copy**:
+
+- **[[TEMPLATE] Strategic Portfolio](https://github.com/orgs/armodis-ai/projects/6)** — the company board: Objective down to User Story, with company Themes.
 - **[[TEMPLATE] Product Roadmap](https://github.com/orgs/armodis-ai/projects/9)** — one product's board: Milestone, Epic and User Story levels, with the product's own Themes.
 - **[[TEMPLATE] Personal Task Mgmt](https://github.com/orgs/armodis-ai/projects/7)** — the personal-domain analog.
 
-(Projects templates are an org-only GitHub feature, so the copy source has to live in an org — these do.)
-
-**No org, or building from scratch?** There's deliberately **no bootstrap script** — creating a board via the GraphQL API (field IDs, option IDs, dynamic iteration IDs) is exactly the brittle glue a capable Claude Code session handles better live than a frozen script would. Follow this checklist the agent executes with `gh`, confirming each step:
+**What a board needs, by hand or to check one.** `provision.py` and the [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) skill set these; this is the list they work from:
 
 1. **Create a Projects (v2) board** for the domain, spanning its repos, or one per product once a business has several (see [Organization, board, or repo?](#organization-board-or-repo)).
 2. **Add the fields the policy reads:** `Status` (single-select: Todo · Backlog · In Progress · In Review · Done, plus Pending Release where repos release by tag), `Priority` (P0–P3), `Effort` (1, 2, 3, 5, 8: the amount of work), `Complexity` (Trivial · Low · Medium · Medium-High · High: how hard it is), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task). See [Recommended custom field schema](#recommended-custom-field-schema).
@@ -72,9 +87,7 @@ The board is the shared-state plane for the [multi-agent workflow](#part-3-multi
 4. **Turn on the built-in workflows** (board menu → Workflows; the API can't enable them): Item closed → Done, Item reopened → In Progress, Pull request linked to issue → In Review, Pull request merged → Done, Auto-close issue, Item added to project (issues only) → Backlog, Auto-add sub-issues to project, and Auto-add to project (one per repo on paid plans; the Free plan allows one per board, so add other repos' issues yourself). "Item added to project" can overwrite a Status set at filing, so read Status back after adding an issue that should be Todo. Boards whose repos release by tag also need a release automation: see [Statuses, readiness and required fields](#statuses-readiness-and-required-fields).
 5. **Adopt the working rules** from [Part 3](#part-3-multi-agent-workflow-via-github): read `STATUS.md` first, claim by flipping `Status → In Progress` and assigning yourself, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
 
-The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Skills that operate on the board (triage, claim, sync) are yours to author — the agent drafts them against this model.
-
-If you *do* have a GitHub org, once you've configured one board to your liking you can [save it as an org Projects template](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) so future projects start pre-wired — a convenience on top of the checklist, not a prerequisite.
+The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Once one board is configured to your liking you can [save it as an org Projects template](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) and point `github.json` at it.
 
 ***
 
