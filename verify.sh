@@ -136,6 +136,21 @@ if [ "${#SKILL_OVERLAYS[@]}" -gt 0 ]; then
   done
 fi
 
+# --- 5b. The board command resolves on PATH ---
+if [[ " ${STOW_PACKAGES[*]} " == *" board "* ]]; then
+  section "Board command"
+  if command -v board >/dev/null 2>&1; then
+    ok "board on PATH ($(command -v board))"
+  else
+    note "board is installed in ~/.local/bin but not on PATH; add: export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled board-refresh.timer >/dev/null 2>&1; then
+    ok "board-refresh.timer enabled (daily snapshot refresh)"
+  else
+    note "board-refresh.timer not enabled; snapshots still refresh on read once older than a day"
+  fi
+fi
+
 # --- 6. GitHub auth (optional, for the orchestration layer) ---
 section "GitHub auth (optional)"
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then

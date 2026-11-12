@@ -1,0 +1,1677 @@
+#!/usr/bin/env python3
+"""board — read and change GitHub project boards through one library.
+
+Reads go to a local snapshot; every write goes through a change plan, which is checked,
+applied, and read back. Boards and their differences (statuses, hierarchy, fields, repos,
+release process) are configuration in boards.json, not code. A board argument of "." means
+the board whose "repos" list the current directory's repo.
+
+  board boards                                   list the configured boards
+  board which                                    the board for the current directory's repo
+  board fields   <board>                         field and option IDs, read live
+  board snapshot <board>... | --all              pull every item: fields, type, parent, sub-issues, labels,
+                                                 assignees, blocked-by, linked pull requests
+  board tree     <board> <owner/repo#n>          the workstream under an issue, with counts
+  board search   <owner> <text>                  live title search, open and closed (duplicate check)
+  board select   <board> [--repo R] [--label L] [--count N] [--include-fixture]
+                                                 next Todo items by Priority, Effort, age; skips assigned,
+                                                 blocked, ungroomed and claimed items, with the reason
+  board claim    <board> <owner/repo#n> [--status-md PATH] [--force]
+                                                 must be open, at Todo and not someone else's; sets In Progress,
+                                                 assigns you, adds the line under "What's in progress"
+  board finish   <board> <owner/repo#n> [--close] [--status-md PATH]
+                                                 Done (Pending Release on a tag-release board once a closing
+                                                 pull request merged), optionally closed; the line removed
+  board hygiene  <board> [--include-fixture]     required fields, stale claims, orphans, levels, Status vs
+                                                 state, pull requests vs In Review, unlinked pull requests
+  board note     <board> <owner/repo#n> <kind> <text> [--by NAME]
+  board notes    <board> <owner/repo#n>          append to / read an item's analysis notes (stale ones marked)
+  board guard    <owner/repo#pr>                 after a merge: Status In Review while another closing pull
+                                                 request is open, Done (or Pending Release) after the last
+  board release  <board> <owner/repo> <tag> [--dry-run]
+                                                 Pending Release items whose merged pull requests are in the tag -> Done
+  board xrefs    <board>                         items whose xref_fields name another business
+  board reset-fixture <board> [--dry-run]        put the test fixture back to its resting state
+  board check    <board> <plan.json>             validate a plan and print the dry run; nothing is written
+  board apply    <board> <plan.json> [--approved]
+                                                 apply a plan, then read back every write and every board
+
+Snapshots and their analysis notes live in $XDG_STATE_HOME/board (default ~/.local/state/board),
+one file per board, written under a lock. Reads use a snapshot younger than freshness_hours
+(default 24) and pull a fresh one otherwise; `apply`, `claim` and `finish` re-pull before writing.
+A note records kind, text, by, at, and the issue's updatedAt; it reads as stale once the issue
+changes. Config: $BOARD_CONFIG, or $XDG_CONFIG_HOME/board/boards.json (default ~/.config/board).
+Needs `gh`, logged in with the project scope.
+
+A plan is a JSON list of operations; an item is "owner/repo#n", or "$name" for an issue
+created earlier in the same plan with "as": "name".
+
+  {"op": "create", "repo": "owner/repo", "title": "...", "body": "...", "type": "Task",
+   "parent": "<item>", "labels": ["..."], "fields": {"Priority": "P2"}, "as": "name"}
+  {"op": "set_field", "item": "<item>", "field": "<name>", "value": <option name | number | text | date>}
+  {"op": "clear_field", "item": "<item>", "field": "<name>"}
+  {"op": "attach", "parent": "<item>", "child": "<item>"}     moves the child if it has a parent
+  {"op": "detach", "child": "<item>"}
+  {"op": "set_type", "item": "<item>", "type": "Task" | null}
+  {"op": "label", "item": "<item>", "add": ["..."], "remove": ["..."]}
+  {"op": "add", "item": "<item>"}                              put an issue on this board
+  {"op": "add_pr", "pr": "owner/repo#n"}                       put a pull request on this board at In Review
+  {"op": "remove", "item": "<item>"}                           archive its item on this board
+  {"op": "close", "item": "<item>", "reason": "completed" | "not_planned" | "duplicate", "duplicate_of": "<item>"}
+  {"op": "reopen", "item": "<item>"}
+  {"op": "relate" | "unrelate", "item": "<item>", "other": "owner/repo#n"}
+  {"op": "block" | "unblock", "item": "<item>", "by": "owner/repo#n"}
+  {"op": "add_options", "field": "<name>", "options": ["..."]}  add single-select options, keeping the rest
+
+Rules every plan is checked against:
+  - Every item an op names must be on the board (or added or created earlier in the plan) and
+    have the board's owner; an op that crosses owners needs "cross_owner": true. The other end
+    of relate and block may be any issue: those links work across owners and move nothing.
+  - A create carries the board's required fields: required_fields (Status, Priority, Theme,
+    Complexity), a type, Effort on effort_levels, Category on the parent type, and a parent
+    below the top level. Moving an issue to Todo needs the same, plus a done-when line in its
+    body (done_marker). Test-fixture items are exempt.
+  - A parent link that puts a level under the same or a lower one is refused; skipped levels
+    are allowed and reported by hygiene.
+  - Titles and bodies a plan writes may not mention another owner's issues (that writes a
+    cross-reference into them); use relate or block.
+  - Setting Category on a Task makes it a Feature, and clearing it makes it a Task again, unless
+    the plan sets the type itself.
+  - Boards marked "read_only" refuse plans. Plans that close, reparent, change level or type,
+    remove, edit options, change the fixture label, cross owners, or touch more than
+    `review_over_items` items need --approved, unless every item they touch is test fixture
+    (labelled `test-fixture` and titled "[Test fixture] ..."). `check` validates everything
+    `apply` will need before anything is written.
+
+Exit codes: 0 done (for `check`, also when the plan needs review: it prints "needs review");
+1 an error, or a write that did not read back; 2 needs review, nothing written; 3 the plan's
+writes read back but something outside the plan changed on a board (for example a sub-issue
+auto-add, or a board workflow closing an issue), which is printed.
+"""
+import contextlib
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+CONFIG_PATH = os.environ.get("BOARD_CONFIG") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "board", "boards.json")
+# Snapshots live in the state folder, not a cache folder: the analysis notes they carry must
+# survive a cache wipe.
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "board")
+CACHE = STATE
+DEFAULTS = {
+    "statuses": {"select": "Todo", "backlog": "Backlog", "claim": "In Progress", "review": "In Review",
+                 "pending": "Pending Release", "done": "Done"},
+    "leaf_type": "Task", "parent_type": "Feature", "release": "none",
+    "required_fields": ["Status", "Priority", "Theme", "Complexity"], "effort_levels": ["User Story", "Task"],
+    "done_marker": r"(?im)^\W*(?:what\s+)?(done when|done looks like|definition of done)\b",
+    "freshness_hours": 24, "settle_seconds": 3, "stale_days": 7, "review_over_items": 10,
+    "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
+    "repos": [], "outside_hierarchy": [],
+}
+
+
+class BoardError(Exception):
+    pass
+
+
+def read_text(path):
+    with open(path) as f:
+        return f.read()
+
+
+def write_text(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+# ---------------------------------------------------------------- transport
+
+def gql(query, **variables):
+    body = json.dumps({"query": query, "variables": variables})
+    r = subprocess.run(["gh", "api", "graphql", "--input", "-"], input=body, capture_output=True, text=True)
+    try:
+        out = json.loads(r.stdout or "{}")
+    except ValueError:
+        raise BoardError(f"gh api graphql: {r.stderr.strip() or r.stdout[:200]}")
+    if out.get("errors"):
+        raise BoardError("GitHub: " + "; ".join(e.get("message", str(e)) for e in out["errors"]))
+    if r.returncode or "data" not in out:
+        raise BoardError(f"gh api graphql failed: {r.stderr.strip()}")
+    return out["data"]
+
+
+def rest(path):
+    """GET a REST path; None when it does not exist (404); BoardError on any other failure."""
+    r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if r.returncode:
+        if "404" in r.stderr or "Not Found" in r.stderr:
+            return None
+        raise BoardError(f"gh api {path}: {r.stderr.strip()}")
+    return json.loads(r.stdout)
+
+
+# ---------------------------------------------------------------- config
+
+def load_config(path=None):
+    path = path or CONFIG_PATH
+    if not os.path.exists(path):
+        raise BoardError(f"no board config at {path}: copy boards.example.json beside it to boards.json and name your boards")
+    cfg = json.loads(read_text(path))
+    boards = {}
+    for name, b in cfg["boards"].items():
+        merged = json.loads(json.dumps(DEFAULTS))
+        for layer in (cfg.get("defaults", {}), b):
+            for k, v in layer.items():
+                if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                    merged[k] = dict(merged[k], **v)
+                else:
+                    merged[k] = json.loads(json.dumps(v))
+        merged["name"] = name
+        boards[name] = merged
+    return boards
+
+
+def current_repo(cwd=None):
+    """owner/name of the current directory's origin remote, or None."""
+    r = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True, cwd=cwd)
+    m = re.search(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", r.stdout.strip()) if r.returncode == 0 else None
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def board_for_repo(boards, repo):
+    hits = [n for n, b in boards.items() if repo in b.get("repos", [])]
+    if len(hits) != 1:
+        raise BoardError(f"{repo} is in {'no board' if not hits else 'several boards: ' + ', '.join(hits)}'s \"repos\" in the "
+                         "board config; name the board")
+    return boards[hits[0]]
+
+
+def board_cfg(boards, name):
+    """A board by name; "." is the board whose "repos" list the current directory's repo."""
+    if name == ".":
+        repo = current_repo()
+        if not repo:
+            raise BoardError("\".\" needs a directory whose origin remote is on GitHub")
+        return board_for_repo(boards, repo)
+    if name not in boards:
+        raise BoardError(f"unknown board {name!r}; configured: {', '.join(boards)}")
+    return boards[name]
+
+
+def root(b, inner):
+    return f'{b["owner_type"]}(login:"{b["owner"]}"){{projectV2(number:{b["number"]}){{{inner}}}}}'
+
+
+def levels(b):
+    """Hierarchy top to bottom, ending with the leaf issue type."""
+    return list(b["hierarchy"]) + [b["leaf_type"]]
+
+
+def is_fixture(b, e):
+    fx = b["fixture"]
+    return fx["label"] in (e.get("labels") or []) and (e.get("title") or "").startswith(fx["title_prefix"])
+
+
+# ---------------------------------------------------------------- reads
+
+FIELDS_Q = """id title fields(first:60){nodes{
+  ... on ProjectV2FieldCommon{id name dataType}
+  ... on ProjectV2SingleSelectField{options{id name color description}}}}"""
+
+
+def fields(b):
+    p = gql("{" + root(b, FIELDS_Q) + "}")[b["owner_type"]]["projectV2"]
+    out = {"project_id": p["id"], "title": p["title"], "fields": {}}
+    for f in p["fields"]["nodes"]:
+        e = {"id": f["id"], "type": f["dataType"]}
+        if "options" in f:
+            e["options"] = [{k: o[k] for k in ("id", "name", "color", "description")} for o in f["options"]]
+        out["fields"][f["name"]] = e
+    return out
+
+
+ITEMS_Q = """items(first:100, after:$after){pageInfo{hasNextPage endCursor} nodes{id type isArchived updatedAt
+  fieldValues(first:40){nodes{
+    ... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2FieldCommon{name}}}
+    ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{name}}}
+    ... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{name}}}
+    ... on ProjectV2ItemFieldDateValue{date field{... on ProjectV2FieldCommon{name}}}}}
+  content{
+    ... on DraftIssue{title}
+    ... on PullRequest{id number title state merged isDraft url repository{nameWithOwner}
+      closingIssuesReferences(first:10){nodes{number repository{nameWithOwner}}}}
+    ... on Issue{id number title state stateReason createdAt updatedAt url repository{nameWithOwner}
+      issueType{name} labels(first:30){nodes{name}} assignees(first:10){nodes{login}}
+      parent{number repository{nameWithOwner}}
+      subIssues(first:100){nodes{number repository{nameWithOwner}}}
+      blockedBy(first:20){nodes{number state repository{nameWithOwner}}}
+      closedByPullRequestsReferences(first:20, includeClosedPrs:true){nodes{number state merged url
+        mergeCommit{oid} repository{nameWithOwner}}}}}}}"""
+
+TITLE_FIELDS = {"Title"}
+
+
+def ref_of(c):
+    return f'{c["repository"]["nameWithOwner"]}#{c["number"]}'
+
+
+def owner_of(ref):
+    return ref.split("/", 1)[0]
+
+
+def snapshot(b, write=True):
+    meta = fields(b)
+    items, after = [], None
+    while True:
+        page = gql("query($after:String){" + root(b, ITEMS_Q) + "}", after=after)[b["owner_type"]]["projectV2"]["items"]
+        for n in page["nodes"]:
+            c = n["content"] or {}
+            vals = {}
+            for v in n["fieldValues"]["nodes"]:
+                if v and v.get("field") and v["field"].get("name") not in TITLE_FIELDS:
+                    for k in ("name", "number", "text", "date"):
+                        if k in v:
+                            vals[v["field"]["name"]] = v[k]
+            e = {"item_id": n["id"], "kind": n["type"], "archived": n["isArchived"], "item_updated": n["updatedAt"],
+                 "title": c.get("title"), "fields": vals}
+            if n["type"] == "ISSUE":
+                e.update(ref=ref_of(c), issue_id=c["id"], state=c["state"], state_reason=c["stateReason"],
+                         created=c["createdAt"], updated=c["updatedAt"], url=c["url"],
+                         issue_type=(c["issueType"] or {}).get("name"),
+                         labels=[l["name"] for l in c["labels"]["nodes"]],
+                         parent=ref_of(c["parent"]) if c["parent"] else None,
+                         children=[ref_of(s) for s in c["subIssues"]["nodes"]],
+                         assignees=[a["login"] for a in c["assignees"]["nodes"]],
+                         blocked_by=[ref_of(x) for x in c["blockedBy"]["nodes"] if x["state"] == "OPEN"],
+                         prs=[{"ref": ref_of(x), "state": x["state"], "merged": x["merged"], "url": x["url"],
+                               "merge_oid": (x["mergeCommit"] or {}).get("oid")}
+                              for x in c["closedByPullRequestsReferences"]["nodes"]])
+            elif n["type"] == "PULL_REQUEST":
+                e.update(pr_ref=ref_of(c), pr_id=c["id"], state=c["state"], merged=c["merged"], url=c["url"],
+                         draft=c["isDraft"], closes=[ref_of(x) for x in c["closingIssuesReferences"]["nodes"]])
+            items.append(e)
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    snap = {"board": b["name"], "taken": now().isoformat(timespec="seconds"), **meta, "items": items}
+    if write:
+        with locked(b):
+            old = read_snapshot_file(b)
+            if old and old.get("taken", "") > snap["taken"]:  # a newer pull landed while this one ran
+                return old
+            keep = {e["ref"]: e["analysis"] for e in (old or {}).get("items", []) if e.get("ref") and e.get("analysis")}
+            for e in items:
+                if e.get("ref") in keep:
+                    e["analysis"] = keep[e["ref"]]
+            write_snapshot_file(b, snap)
+    return snap
+
+
+def pull(b, write=True):
+    """snapshot(), naming the board when GitHub can't read it (a placeholder left in the config)."""
+    try:
+        return snapshot(b, write=write)
+    except BoardError as e:
+        raise BoardError(f"board {b['name']} ({b['owner_type']} {b['owner']} #{b['number']}): {e}; fix or remove it in the board config")
+
+
+def snapshot_path(b):
+    return os.path.join(STATE, f'{b["name"]}.json')
+
+
+@contextlib.contextmanager
+def locked(b):
+    """Hold the board's lock file while its snapshot is read and rewritten."""
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, f'{b["name"]}.lock'), "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def read_snapshot_file(b):
+    path = snapshot_path(b)
+    return json.loads(read_text(path)) if os.path.exists(path) else None
+
+
+def write_snapshot_file(b, snap):
+    os.makedirs(STATE, exist_ok=True)
+    tmp = snapshot_path(b) + ".tmp"
+    write_text(tmp, json.dumps(snap, indent=1))
+    os.replace(tmp, snapshot_path(b))
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def load_snapshot(b):
+    """The board's snapshot, pulled again when it is missing or older than freshness_hours."""
+    snap = read_snapshot_file(b)
+    if snap is None:
+        print(f'(no snapshot of {b["name"]}; pulling one)', file=sys.stderr)
+        return snapshot(b)
+    age = now() - dt.datetime.fromisoformat(snap["taken"])
+    if age.total_seconds() > b["freshness_hours"] * 3600:
+        print(f'(snapshot of {b["name"]} is {age.total_seconds() / 3600:.0f} h old, over {b["freshness_hours"]} h; pulling a fresh one)',
+              file=sys.stderr)
+        return snapshot(b)
+    print(f'(snapshot of {b["name"]} is {int(age.total_seconds() // 60)} min old)', file=sys.stderr)
+    return snap
+
+
+def prs_on(snap):
+    return [e for e in snap["items"] if e.get("pr_ref") and not e["archived"]]
+
+
+# ---------------------------------------------------------------- analysis notes
+
+def add_note(b, ref, kind, value, by, snap_loader=None):
+    """Append an analysis entry to an item's record in the snapshot. basis_updated is the
+    issue's updatedAt when the note was written; the note is stale once the issue changes."""
+    (snap_loader or load_snapshot)(b)
+    with locked(b):
+        snap = read_snapshot_file(b)
+        e = next((x for x in snap["items"] if x.get("ref") == ref and not x["archived"]), None)
+        if e is None:
+            raise BoardError(f"{ref} is not on the {b['name']} board")
+        entry = {"kind": kind, "value": value, "by": by, "at": now().isoformat(timespec="seconds"),
+                 "basis_updated": e["updated"]}
+        e.setdefault("analysis", []).append(entry)
+        write_snapshot_file(b, snap)
+    return entry
+
+
+def notes(snap, ref):
+    """An item's analysis entries, each with stale=True when the issue changed after it."""
+    e = by_ref(snap).get(ref)
+    if e is None:
+        raise BoardError(f"{ref} is not on the {snap['board']} board")
+    return [dict(x, stale=x["basis_updated"] != e["updated"]) for x in e.get("analysis", [])]
+
+
+def by_ref(snap):
+    return {e["ref"]: e for e in snap["items"] if "ref" in e and not e["archived"]}
+
+
+def level_of(b, e):
+    cat = e["fields"].get("Category")
+    if cat:
+        return cat
+    if e.get("issue_type") == b["leaf_type"]:
+        return b["leaf_type"]
+    return None
+
+
+def tree(b, snap, top):
+    idx = by_ref(snap)
+    if top not in idx:
+        raise BoardError(f"{top} is not on the {b['name']} board")
+    lines, counts = [], {}
+
+    def walk(r, depth):
+        e = idx.get(r)
+        if e is None:
+            lines.append("  " * depth + f"{r}  (not on this board)")
+            return
+        lv = level_of(b, e) or "(no level)"
+        c = counts.setdefault(lv, [0, 0])
+        c[0 if e["state"] == "OPEN" else 1] += 1
+        lines.append("  " * depth + f'{r}  [{lv}] {e["fields"].get("Status", "-")}  {e["title"]}')
+        for ch in e["children"]:
+            walk(ch, depth + 1)
+
+    walk(top, 0)
+    lines.append("counts: " + "; ".join(f"{k} {o} open, {c} closed" for k, (o, c) in counts.items()))
+    return "\n".join(lines)
+
+
+SEARCH_Q = """query($q:String!){search(query:$q, type:ISSUE, first:30){nodes{
+  ... on Issue{number title state url repository{nameWithOwner}}}}}"""
+
+
+def search(owner, text):
+    q = f'{text} in:title is:issue user:{owner}'
+    nodes = gql(SEARCH_Q, q=q)["search"]["nodes"]
+    return [(ref_of(n), n["state"], n["title"]) for n in nodes if n]
+
+
+# ---------------------------------------------------------------- selection, claims, hygiene
+
+def priority_rank(snap, value):
+    opts = [o["name"] for o in snap["fields"].get("Priority", {}).get("options", [])]
+    return opts.index(value) if value in opts else len(opts)
+
+
+def claimed_refs(repo):
+    """Issue refs listed under "What's in progress" in that repo's STATUS.md on GitHub."""
+    data = rest(f"repos/{repo}/contents/STATUS.md")
+    if not data:
+        return set()
+    import base64
+    text = base64.b64decode(data["content"]).decode()
+    m = re.search(r"^## What's in progress\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if not m:
+        return set()
+    sec, out = m.group(1), set()
+    for owner_repo, n in re.findall(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", sec):
+        out.add(f"{owner_repo}#{n}")
+    return out
+
+
+def required_gaps(b, fields, typ, parent, level=None, assignees=None):
+    """The required fields an issue is missing, by the board's rules: required_fields on every
+    issue, a type, Effort on effort_levels, Category on parents, a parent below the top level,
+    and an assignee from In Progress on (when assignees is given)."""
+    gaps = [f for f in b["required_fields"] if fields.get(f) is None]
+    if not typ:
+        gaps.append("Type")
+    level = level or fields.get("Category") or (b["leaf_type"] if typ == b["leaf_type"] else None)
+    if typ == b.get("parent_type") and not fields.get("Category"):
+        gaps.append("Category")
+    if level in b["effort_levels"] and fields.get("Effort") is None:
+        gaps.append("Effort")
+    top = b["hierarchy"][0] if b["hierarchy"] else None
+    if not parent and level and level != top and level not in b.get("outside_hierarchy", []):
+        gaps.append("parent link")
+    if assignees is not None and fields.get("Status") in (b["statuses"]["claim"], b["statuses"]["review"]) and not assignees:
+        gaps.append("assignee")
+    return gaps
+
+
+def has_done_marker(b, body):
+    return bool(re.search(b["done_marker"], body or ""))
+
+
+def select(b, snap, repo=None, label=None, count=1, claimed=claimed_refs, include_fixture=False):
+    """Todo items an agent may take, ordered by Priority, Effort, then age. Items assigned to a
+    person, blocked by an open issue, missing a required field, or claimed in STATUS.md are
+    skipped, with the reason."""
+    picks, skipped = [], []
+    cands = [e for e in by_ref(snap).values()
+             if e["state"] == "OPEN" and e["fields"].get("Status") == b["statuses"]["select"]
+             and (include_fixture or not is_fixture(b, e))
+             and (repo is None or e["ref"].split("#")[0] == repo)
+             and (label is None or label in e["labels"])]
+    claims = {}
+    for e in cands:
+        if e.get("assignees"):
+            skipped.append((e["ref"], f"assigned to {', '.join(e['assignees'])}"))
+            continue
+        if e.get("blocked_by"):
+            skipped.append((e["ref"], f"blocked by {', '.join(e['blocked_by'])}"))
+            continue
+        gaps = required_gaps(b, e["fields"], e.get("issue_type"), e["parent"])
+        if gaps:
+            skipped.append((e["ref"], "needs grooming: no " + ", ".join(gaps)))
+            continue
+        r = e["ref"].split("#")[0]
+        if r not in claims:
+            claims[r] = claimed(r)
+        if e["ref"] in claims[r]:
+            skipped.append((e["ref"], "claimed in STATUS.md"))
+            continue
+        picks.append(e)
+    picks.sort(key=lambda e: (priority_rank(snap, e["fields"]["Priority"]), e["fields"].get("Effort") or 0, e["created"]))
+    return picks[:count], skipped
+
+
+OPEN_PRS_Q = """query($o:String!,$r:String!){repository(owner:$o,name:$r){pullRequests(states:OPEN, first:100){nodes{
+  number url closingIssuesReferences(first:1){totalCount} projectItems(first:20){nodes{project{id}}}}}}}"""
+
+
+def unlinked_prs(repo, project_id):
+    """Open pull requests in a repo that close no issue and aren't on the board."""
+    o, r = repo.split("/")
+    nodes = (gql(OPEN_PRS_Q, o=o, r=r)["repository"] or {"pullRequests": {"nodes": []}})["pullRequests"]["nodes"]
+    return [f"{repo}#{n['number']}" for n in nodes if n["closingIssuesReferences"]["totalCount"] == 0
+            and project_id not in {(x.get("project") or {}).get("id") for x in n["projectItems"]["nodes"] if x}]
+
+
+def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
+    """Findings as (kind, ref, message). open_prs(repo, project_id) lists a repo's open pull
+    requests that close no issue and aren't on this board; it is called for each of the board's
+    repos when given."""
+    today = today or now()
+    st_ = b["statuses"]
+    tags = b.get("release") == "tags"
+    idx = by_ref(snap)
+    lv = levels(b)
+    out = []
+
+    def add(kind, ref, msg):
+        out.append((kind, ref, msg))
+
+    for e in idx.values():
+        if not include_fixture and is_fixture(b, e):
+            continue
+        r, f, st = e["ref"], e["fields"], e["fields"].get("Status")
+        if owner_of(r) != b["owner"]:
+            add("cross-owner", r, f"issue from another owner on the {b['name']} board")
+        prs = e.get("prs", [])
+        open_pr = [p["ref"] for p in prs if p["state"] == "OPEN"]
+        if e["state"] == "CLOSED":
+            completed = e.get("state_reason") in (None, "COMPLETED")
+            ok = (st_["done"], st_["pending"]) if tags and completed else (st_["done"],)
+            if st not in ok and not (open_pr and st == st_["review"]):
+                add("status", r, f"closed but Status is {st!r}" + (" (expected Pending Release or Done)" if len(ok) > 1 else ""))
+            if open_pr and st != st_["review"]:
+                add("pull request", r, f"closed while {', '.join(open_pr)} is still open, but Status is {st!r}, not {st_['review']!r}")
+        if e["state"] == "OPEN" and st == st_["done"]:
+            add("status", r, "Status is Done but the issue is open")
+        if st == st_["pending"] and not tags:
+            add("status", r, "Pending Release on a board with no release process (release: none)")
+        if st == st_["pending"] and e["state"] == "OPEN":
+            add("status", r, "Pending Release but the issue is open")
+        if st is None:
+            add("missing", r, "no Status")
+        if e["state"] == "OPEN":
+            if open_pr and st != st_["review"]:
+                add("pull request", r, f"{', '.join(open_pr)} is open but Status is {st!r}, not {st_['review']!r}")
+            if st == st_["review"] and not open_pr:
+                add("pull request", r, f"{st_['review']} with no open pull request")
+            for gap in required_gaps(b, f, e.get("issue_type"), e["parent"], assignees=e.get("assignees", [])):
+                if gap != "parent link" or e.get("issue_type") != b["leaf_type"]:  # Tasks: the orphan check below
+                    add("missing", r, f"no {gap}")
+        if st == b["statuses"]["claim"]:
+            last = max(x for x in (e["updated"], e.get("item_updated")) if x)
+            age = (today - dt.datetime.fromisoformat(last.replace("Z", "+00:00"))).days
+            if age >= b["stale_days"]:
+                add("stale", r, f"In Progress, not updated for {age} days")
+        cat, typ = f.get("Category"), e.get("issue_type")
+        if cat and typ == b["leaf_type"]:
+            add("level", r, f"has Category {cat!r} and type {typ!r}")
+        if cat in b.get("outside_hierarchy", []):
+            continue
+        my = level_of(b, e)
+        if my is None and not cat:
+            add("level", r, "no Category and not a Task")
+        if typ == b["leaf_type"] and not e["parent"]:
+            add("orphan", r, "Task with no parent")
+        if e["parent"] and e["parent"] in idx and my in lv:
+            pl = level_of(b, idx[e["parent"]])
+            if pl in lv:
+                gap = lv.index(my) - lv.index(pl)
+                if gap <= 0:
+                    add("level", r, f"{my} under {pl} {e['parent']} (not lower)")
+                elif gap > 1:
+                    add("level", r, f"{my} under {pl} {e['parent']} skips {', '.join(lv[lv.index(pl) + 1:lv.index(my)])}")
+        for ch in e["children"]:
+            if ch not in idx:
+                add("missing", ch, f"sub-issue of {r} but not on the board")
+    for p in prs_on(snap):
+        st = p["fields"].get("Status")
+        if p["state"] == "OPEN" and st != st_["review"]:
+            add("pull request", p["pr_ref"], f"open pull request on the board at {st!r}, not {st_['review']!r}")
+        if p["state"] != "OPEN" and st not in (st_["done"], st_["pending"]):
+            add("pull request", p["pr_ref"], f"{'merged' if p.get('merged') else 'closed'} pull request at {st!r}")
+    if open_prs:
+        for repo in b.get("repos", []):
+            for pr in open_prs(repo, snap["project_id"]):
+                add("pull request", pr, f"open, closes no issue, and isn't on the {b['name']} board")
+    return sorted(out)
+
+
+def xrefs(b, snap):
+    """Items whose cross-reference fields (xref_fields, by default Source Org and Target Org)
+    name a business other than the board's org_label."""
+    own = b.get("org_label")
+    src, tgt = b.get("xref_fields", ["Source Org", "Target Org"])
+    if src not in snap["fields"] and tgt not in snap["fields"]:
+        raise BoardError(f"board {b['name']} has neither {src} nor {tgt}; set xref_fields in the board config")
+    out = []
+    for e in by_ref(snap).values():
+        s, t = e["fields"].get(src), e["fields"].get(tgt)
+        if (s and s != own) or (t and t != own):
+            out.append((e["ref"], s, t, e["title"]))
+    return out
+
+
+# ---------------------------------------------------------------- plans
+
+REVIEW_OPS = {"close", "attach", "detach", "set_type", "remove", "add_options"}
+# op -> (keys naming items, required keys, optional keys)
+OPS = {
+    "create": (("parent",), {"repo", "title"}, {"body", "type", "parent", "labels", "fields", "as"}),
+    "set_field": (("item",), {"item", "field", "value"}, set()),
+    "clear_field": (("item",), {"item", "field"}, set()),
+    "attach": (("parent", "child"), {"parent", "child"}, set()),
+    "detach": (("child",), {"child"}, set()),
+    "set_type": (("item",), {"item", "type"}, set()),
+    "label": (("item",), {"item"}, {"add", "remove"}),
+    "add": (("item",), {"item"}, set()),
+    "remove": (("item",), {"item"}, set()),
+    "close": (("item", "duplicate_of"), {"item"}, {"reason", "duplicate_of"}),
+    "reopen": (("item",), {"item"}, set()),
+    "add_options": ((), {"field", "options"}, set()),
+    "relate": (("item",), {"item", "other"}, set()),
+    "unrelate": (("item",), {"item", "other"}, set()),
+    "block": (("item",), {"item", "by"}, set()),
+    "unblock": (("item",), {"item", "by"}, set()),
+    "add_pr": ((), {"pr"}, set()),
+}
+# keys naming an issue that may sit anywhere, on any board and with any owner: a relationship's
+# other end. GitHub's "relates to" and "blocked by" links work across owners and move nothing.
+LINK_KEYS = {"relate": "other", "unrelate": "other", "block": "by", "unblock": "by"}
+COMMON_KEYS = {"op", "cross_owner", "note", "implied"}
+REF_RE = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
+MENTION_RE = re.compile(r"(?<![\w/.-])([\w.-]+)/[\w.-]+#\d+|github\.com/([\w.-]+)/[\w.-]+/(?:issues|pull)/\d+")
+
+
+def foreign_mentions(text, owner):
+    """References in text to issues or pull requests of another owner."""
+    out = []
+    for m in MENTION_RE.finditer(text or ""):
+        o = m.group(1) or m.group(2)
+        if o.lower() != owner.lower():
+            out.append(m.group(0))
+    return out
+
+
+def expand(b, idx, plan):
+    """Promotion and demotion change the issue type with the level: setting Category on a leaf
+    makes it the parent type, clearing Category on a parent makes it the leaf type. The implied
+    set_type ops are added after the Category op unless the plan sets the type itself."""
+    out = []
+    typed = {op.get("item") for op in plan if isinstance(op, dict) and op.get("op") == "set_type"}
+    for op in plan:
+        out.append(op)
+        if not isinstance(op, dict) or op.get("field") != "Category" or op.get("item") in typed:
+            continue
+        e = idx.get(op.get("item"))
+        if e is None:
+            continue
+        if op.get("op") == "set_field" and e.get("issue_type") == b["leaf_type"] and b.get("parent_type"):
+            out.append({"op": "set_type", "item": op["item"], "type": b["parent_type"], "implied": "promotion"})
+        if op.get("op") == "clear_field" and e.get("issue_type") == b.get("parent_type"):
+            out.append({"op": "set_type", "item": op["item"], "type": b["leaf_type"], "implied": "demotion"})
+    return out
+
+
+def new_options(field, op, n="?"):
+    """The option names an add_options op adds to a field: a non-empty list of distinct, non-empty
+    names, of which those the field doesn't already have, in order. Raises on bad input."""
+    names = op.get("options")
+    if not isinstance(names, list) or not names or not all(isinstance(x, str) and x for x in names):
+        raise BoardError(f"op {n}: options must be a non-empty list of names")
+    if len(set(names)) != len(names):
+        raise BoardError(f"op {n}: options lists a name twice")
+    have = {o["name"] for o in field["options"]}
+    return [x for x in names if x not in have]
+
+
+def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=None):
+    """Validate a plan against the board before anything is written. Returns (steps, review_reasons).
+    issue_info(ref) -> dict(owner, title, labels, parent) for an issue not on the board, or raises.
+    repo_info(owner/name) -> dict(types, labels), used to check issue types and labels when given.
+    body_of(ref) -> the issue's body, used to check "what done looks like" before Todo when given.
+    pr_info(ref) -> dict(owner, closes) for a pull request, or raises; needed by add_pr.
+
+    Beyond the shape of each op, it refuses: an issue created without the board's required fields
+    (or at Todo without a done-when line); a move to Todo of an issue missing them; a parent link
+    that puts a level under the same or a lower one; text that mentions another owner's issues."""
+    if b.get("read_only"):
+        raise BoardError(f"board {b['name']} is read-only in the board config")
+    if not isinstance(plan, list) or not plan:
+        raise BoardError("a plan is a non-empty JSON list of operations")
+    idx, created, added, touched, reasons, steps = by_ref(snap), {}, set(), set(), [], []
+    plan = expand(b, idx, plan) if isinstance(plan, list) else plan
+    working = {k: dict(v, options=list(v["options"])) if "options" in v else v for k, v in snap["fields"].items()}
+    fixture_only = True
+    fx_label = b["fixture"]["label"]
+
+    def info(ref, n):
+        if not isinstance(ref, str):
+            raise BoardError(f"op {n}: {ref!r} is not an item")
+        if ref.startswith("$"):
+            if ref[1:] not in created:
+                raise BoardError(f"op {n}: {ref} is not created earlier in the plan")
+            return created[ref[1:]]
+        if not REF_RE.match(ref):
+            raise BoardError(f"op {n}: {ref!r} is not owner/repo#n")
+        if ref in idx:
+            e = idx[ref]
+            return dict(owner=owner_of(ref), title=e["title"], labels=e["labels"], parent=e["parent"], on_board=True,
+                        level=level_of(b, e))
+        i = dict(issue_info(ref))
+        i["on_board"] = ref in added
+        return i
+
+    def check_repo(n, repo, types=(), labels=()):
+        if repo_info is None:
+            return
+        r = repo_info(repo)
+        for t in types:
+            if t is not None and t not in r["types"]:
+                raise BoardError(f"op {n}: no issue type {t!r} in {repo}")
+        missing = [x for x in labels if x not in r["labels"]]
+        if missing:
+            raise BoardError(f"op {n}: no label {missing} in {repo}")
+
+    lv = levels(b)
+    planned = {}  # ref -> fields set earlier in the plan
+    planned_parent, planned_type = {}, {}  # ref -> parent / issue type set earlier in the plan
+
+    def upside_down(n, child_level, parent_level, child, parent):
+        if child_level in lv and parent_level in lv and lv.index(child_level) <= lv.index(parent_level):
+            raise BoardError(f"op {n}: {child} ({child_level}) under {parent} ({parent_level}) puts a level under the same "
+                             f"or a lower one; the hierarchy runs {' > '.join(lv)}")
+
+    for n, op in enumerate(plan, 1):
+        if not isinstance(op, dict):
+            raise BoardError(f"op {n}: not an object")
+        kind = op.get("op")
+        if kind not in OPS:
+            raise BoardError(f"op {n}: unknown op {kind!r}")
+        item_keys, required, optional = OPS[kind]
+        missing = required - set(op)
+        unknown = set(op) - required - optional - COMMON_KEYS
+        if missing:
+            raise BoardError(f"op {n}: {kind} needs {', '.join(sorted(missing))}")
+        if unknown:
+            raise BoardError(f"op {n}: {kind} does not take {', '.join(sorted(unknown))}")
+        cross = bool(op.get("cross_owner"))
+        refs = {k: op[k] for k in item_keys if op.get(k) is not None}
+        infos = {k: info(v, n) for k, v in refs.items()}
+        for k, v in refs.items():  # a level set or cleared earlier in the plan counts from then on
+            if v in planned and "Category" in planned[v]:
+                infos[k] = dict(infos[k], level=planned[v]["Category"] or b["leaf_type"])
+
+        # every item an op works on is on this board (or added or created earlier in the plan)
+        # and has this board's owner, unless the op says it crosses owners
+        for k, v in refs.items():
+            if k == "duplicate_of":
+                continue
+            if kind != "add" and not infos[k]["on_board"]:
+                raise BoardError(f"op {n}: {v} is not on the {b['name']} board; add it first")
+            if infos[k]["owner"] != b["owner"] and not cross:
+                raise BoardError(f"op {n}: {v} is owned outside {b['owner']} (crosses owners); set \"cross_owner\": true")
+            touched.add(v)
+            fixture_only &= is_fixture(b, infos[k])
+        if kind == "attach" and infos["parent"]["owner"] != infos["child"]["owner"] and not cross:
+            raise BoardError(f"op {n}: {op['child']} under {op['parent']} crosses owners; set \"cross_owner\": true")
+        if kind == "attach":
+            upside_down(n, infos["child"].get("level"), infos["parent"].get("level"), op["child"], op["parent"])
+            planned_parent[op["child"]] = op["parent"]
+        if kind == "detach":
+            planned_parent[op["child"]] = None
+        if kind == "set_type":
+            planned_type[op["item"]] = op["type"]
+        if kind in LINK_KEYS:
+            other = op[LINK_KEYS[kind]]
+            if other == op["item"]:
+                raise BoardError(f"op {n}: an issue cannot be linked to itself")
+            info(other, n)  # must exist; any owner, any board
+        if kind == "close" and op.get("duplicate_of"):
+            d = infos["duplicate_of"]
+            if d["owner"] != b["owner"] and not cross:
+                raise BoardError(f"op {n}: {op['duplicate_of']} is owned outside {b['owner']} (crosses owners); set \"cross_owner\": true")
+            fixture_only &= is_fixture(b, d)
+        if kind == "add_pr":
+            if not REF_RE.match(str(op["pr"])):
+                raise BoardError(f"op {n}: {op['pr']!r} is not owner/repo#n")
+            if pr_info is None:
+                raise BoardError(f"op {n}: add_pr needs GitHub to check the pull request")
+            pi = pr_info(op["pr"])
+            if pi["owner"] != b["owner"] and not cross:
+                raise BoardError(f"op {n}: {op['pr']} is owned outside {b['owner']} (crosses owners); set \"cross_owner\": true")
+            touched.add(op["pr"])
+            fixture_only = False
+        if kind == "add":
+            added.add(op["item"])
+
+        if kind in REVIEW_OPS:
+            reasons.append(f"op {n}: {kind}")
+        if kind in ("set_field", "clear_field"):
+            f = working.get(op["field"])
+            if f is None:
+                raise BoardError(f"op {n}: no field {op['field']!r} on {b['name']}")
+            if kind == "set_field":
+                check_value(f, op["value"], n)
+            if op["field"] == "Category":
+                reasons.append(f"op {n}: changes level (Category)")
+            r = op["item"]
+            planned.setdefault(r, {})[op["field"]] = op.get("value") if kind == "set_field" else None
+            if kind == "set_field" and op["field"] == "Status" and op["value"] == b["statuses"]["select"] \
+                    and not r.startswith("$") and r in idx and not is_fixture(b, idx[r]):
+                e = idx[r]
+                fields_now = {k: v for k, v in dict(e["fields"], **planned[r]).items() if v is not None}
+                gaps = required_gaps(b, fields_now, planned_type.get(r, e.get("issue_type")),
+                                     planned_parent[r] if r in planned_parent else e["parent"])
+                if body_of is not None and not has_done_marker(b, body_of(r)):
+                    gaps.append("a done-when line in the body")
+                if gaps:
+                    raise BoardError(f"op {n}: {r} can't move to {op['value']}: no {', '.join(gaps)}")
+        elif kind == "create":
+            m = re.match(r"^([\w.-]+)/([\w.-]+)$", str(op["repo"]))
+            if not m or not op["title"]:
+                raise BoardError(f"op {n}: create needs repo (owner/name) and title")
+            owner = m.group(1)
+            if owner != b["owner"] and not cross:
+                raise BoardError(f"op {n}: creating in {owner} for the {b['owner']} board crosses owners; set \"cross_owner\": true")
+            if op.get("parent") and infos["parent"]["owner"] != owner and not cross:
+                raise BoardError(f"op {n}: parent {op['parent']} is in another owner; set \"cross_owner\": true")
+            for where, text in (("title", op["title"]), ("body", op.get("body"))):
+                bad = foreign_mentions(text, owner)
+                if bad:
+                    raise BoardError(f"op {n}: the {where} mentions {', '.join(bad)} from another owner, which writes a "
+                                     "cross-reference into that owner's issue; link it with relate or block instead")
+            fv = op.get("fields") or {}
+            new_level = fv.get("Category") or (b["leaf_type"] if op.get("type") == b["leaf_type"] else None)
+            if op.get("parent"):
+                upside_down(n, new_level, infos["parent"].get("level"), f"the new issue", op["parent"])
+            new_fixture = is_fixture(b, {"title": op["title"], "labels": op.get("labels") or []})
+            if not new_fixture:
+                gaps = required_gaps(b, fv, op.get("type"), op.get("parent"), level=new_level)
+                if fv.get("Status") == b["statuses"]["select"] and not has_done_marker(b, op.get("body")):
+                    gaps.append("a done-when line in the body (needed at " + b["statuses"]["select"] + ")")
+                if gaps:
+                    raise BoardError(f"op {n}: create \"{op['title']}\" needs {', '.join(gaps)}")
+            for fname, v in (op.get("fields") or {}).items():
+                f = working.get(fname)
+                if f is None:
+                    raise BoardError(f"op {n}: no field {fname!r} on {b['name']}")
+                check_value(f, v, n)
+            check_repo(n, op["repo"], [op.get("type")], op.get("labels") or [])
+            fixture_only &= is_fixture(b, {"title": op["title"], "labels": op.get("labels") or []})
+            touched.add(f"(new #{n}) {op['title']}")
+            if op.get("as"):
+                if op["as"] in created:
+                    raise BoardError(f"op {n}: ${op['as']} is already used")
+                created[op["as"]] = dict(owner=owner, title=op["title"], labels=op.get("labels") or [],
+                                         parent=op.get("parent"), on_board=True, repo=op["repo"], level=new_level)
+        elif kind == "set_type":
+            check_repo(n, repo_of(op["item"], created), [op["type"]])
+        elif kind == "label":
+            names = (op.get("add") or []) + (op.get("remove") or [])
+            if not names:
+                raise BoardError(f"op {n}: label needs add or remove")
+            check_repo(n, repo_of(op["item"], created), labels=names)
+            if fx_label in names:
+                reasons.append(f"op {n}: changes the {fx_label} label")
+                fixture_only = False
+        elif kind == "close":
+            dup = op.get("duplicate_of")
+            reason = op.get("reason") or ("duplicate" if dup else "completed")
+            if reason not in ("completed", "not_planned", "duplicate"):
+                raise BoardError(f"op {n}: reason must be completed, not_planned or duplicate")
+            if (reason == "duplicate") != bool(dup):
+                raise BoardError(f"op {n}: a duplicate close needs duplicate_of, and duplicate_of needs reason duplicate")
+            if dup and dup == op["item"]:
+                raise BoardError(f"op {n}: an issue cannot duplicate itself")
+        elif kind == "add_options":
+            f = working.get(op["field"])
+            if f is None or "options" not in f:
+                raise BoardError(f"op {n}: {op['field']!r} is not a single-select field")
+            f["options"] += [{"name": x} for x in new_options(f, op, n)]
+            fixture_only = False
+        if cross:
+            reasons.append(f"op {n}: crosses owners")
+        steps.append((n, op, infos))
+    # A level changed in place must still sit below its parent and above its children, once the
+    # whole plan has run (it may reparent after the Category op).
+    def final_level(ref):
+        if ref in planned and "Category" in planned[ref]:
+            return planned[ref]["Category"] or b["leaf_type"]
+        return level_of(b, idx[ref]) if ref in idx else None
+
+    def final_parent(ref):
+        return planned_parent[ref] if ref in planned_parent else (idx[ref]["parent"] if ref in idx else None)
+    for ref in [r for r, f in planned.items() if "Category" in f and r in idx]:
+        par = final_parent(ref)
+        if par:
+            upside_down("final", final_level(ref), final_level(par), ref, par)
+        for ch in idx[ref]["children"]:
+            if final_parent(ch) == ref:
+                upside_down("final", final_level(ch), final_level(ref), ch, ref)
+    if len(touched) > b["review_over_items"]:
+        reasons.append(f"touches {len(touched)} items (over {b['review_over_items']})")
+    if fixture_only:
+        reasons = []
+    return steps, reasons
+
+
+def repo_of(ref, created):
+    if ref.startswith("$"):
+        return created[ref[1:]]["repo"]
+    return ref.split("#")[0]
+
+
+def check_value(f, v, n):
+    t = f["type"]
+    if t == "SINGLE_SELECT":
+        if v not in [o["name"] for o in f["options"]]:
+            raise BoardError(f"op {n}: {v!r} is not an option of this field")
+    elif t == "NUMBER":
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise BoardError(f"op {n}: a number is needed")
+    elif t == "DATE":
+        if not (isinstance(v, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", v)):
+            raise BoardError(f"op {n}: a YYYY-MM-DD date is needed")
+    elif t == "TEXT":
+        if not isinstance(v, str):
+            raise BoardError(f"op {n}: text is needed")
+    else:
+        raise BoardError(f"op {n}: fields of type {t} cannot be set")
+
+
+def describe(op):
+    k = op["op"]
+    if k == "create":
+        return f'create {op["repo"]} "{op["title"]}"' + (f' under {op["parent"]}' if op.get("parent") else "") + (f' as ${op["as"]}' if op.get("as") else "")
+    if k == "set_field":
+        return f'set {op["item"]} {op["field"]} = {op["value"]!r}'
+    if k == "clear_field":
+        return f'clear {op["item"]} {op["field"]}'
+    if k == "attach":
+        return f'attach {op["child"]} under {op["parent"]}'
+    if k == "close":
+        reason = op.get("reason") or ("duplicate" if op.get("duplicate_of") else "completed")
+        return f'close {op["item"]} ({reason}' + (f' of {op["duplicate_of"]})' if op.get("duplicate_of") else ")")
+    if k == "add_options":
+        return f'add options {op["options"]} to {op["field"]}'
+    if k in ("relate", "unrelate"):
+        return f'{k} {op["item"]} {"and" if k == "relate" else "from"} {op["other"]}'
+    if k in ("block", "unblock"):
+        return f'{"mark" if k == "block" else "unmark"} {op["item"]} blocked by {op["by"]}'
+    if k == "add_pr":
+        return f'add pull request {op["pr"]}'
+    if op.get("implied"):
+        return f'set_type {op["item"]} {op["type"]} ({op["implied"]})'
+    rest_ = {x: y for x, y in op.items() if x != "op"}
+    return f"{k} " + " ".join(f"{x}={y}" for x, y in rest_.items())
+
+
+# ---------------------------------------------------------------- writes (GitHub)
+
+ISSUE_Q = """query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){id
+  issue(number:$n){id title body state stateReason issueType{name} labels(first:30){nodes{name}} parent{number repository{nameWithOwner}}
+    assignees(first:10){nodes{login}} relatesTo(first:50){nodes{number repository{nameWithOwner}}}
+    blockedBy(first:50){nodes{number repository{nameWithOwner}}}}}}"""
+PR_Q = """query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){id number state merged url
+  closingIssuesReferences(first:20){nodes{id number state repository{nameWithOwner}
+    closedByPullRequestsReferences(first:20){nodes{number state repository{nameWithOwner}}}}}}}}"""
+REPO_Q = """query($o:String!,$r:String!){repository(owner:$o,name:$r){id
+  issueTypes(first:20){nodes{id name}} labels(first:100){nodes{id name}}}}"""
+
+
+class GitHub:
+    def __init__(self):
+        self.issues, self.repos = {}, {}
+
+    def issue(self, ref, fresh=False):
+        if fresh or ref not in self.issues:
+            o, r, n = REF_RE.match(ref).groups()
+            d = gql(ISSUE_Q, o=o, r=r, n=int(n))["repository"]
+            if not d or not d["issue"]:
+                raise BoardError(f"no issue {ref}")
+            i = d["issue"]
+            self.issues[ref] = dict(id=i["id"], owner=o, title=i["title"], state=i["state"], reason=i["stateReason"],
+                                    type=(i["issueType"] or {}).get("name"),
+                                    labels=[l["name"] for l in i["labels"]["nodes"]],
+                                    parent=ref_of(i["parent"]) if i["parent"] else None,
+                                    body=i.get("body") or "", assignees=[a["login"] for a in i["assignees"]["nodes"]],
+                                    relates=[ref_of(x) for x in i["relatesTo"]["nodes"]],
+                                    blocked_by=[ref_of(x) for x in i["blockedBy"]["nodes"]])
+        return self.issues[ref]
+
+    def pr(self, ref):
+        o, r, n = REF_RE.match(ref).groups()
+        d = (gql(PR_Q, o=o, r=r, n=int(n))["repository"] or {}).get("pullRequest")
+        if not d:
+            raise BoardError(f"no pull request {ref}")
+        return dict(id=d["id"], owner=o, state=d["state"], merged=d["merged"], url=d["url"],
+                    closes=[dict(id=x["id"], ref=ref_of(x), state=x["state"],
+                                 open_prs=[ref_of(p) for p in x["closedByPullRequestsReferences"]["nodes"] if p["state"] == "OPEN"])
+                            for x in d["closingIssuesReferences"]["nodes"]])
+
+    def viewer(self):
+        if not hasattr(self, "_viewer"):
+            self._viewer = gql("{viewer{id login}}")["viewer"]
+        return self._viewer
+
+    def repo(self, name):
+        if name not in self.repos:
+            o, r = name.split("/")
+            d = gql(REPO_Q, o=o, r=r)["repository"]
+            self.repos[name] = dict(id=d["id"], types={t["name"]: t["id"] for t in d["issueTypes"]["nodes"]},
+                                    labels={l["name"]: l["id"] for l in d["labels"]["nodes"]})
+        return self.repos[name]
+
+
+M_CREATE = """mutation($r:ID!,$t:String!,$b:String,$ty:ID,$p:ID,$l:[ID!]){createIssue(input:{repositoryId:$r,title:$t,body:$b,
+  issueTypeId:$ty,parentIssueId:$p,labelIds:$l}){issue{id number url repository{nameWithOwner}}}}"""
+M_ADD = "mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}"
+M_ARCHIVE = "mutation($p:ID!,$i:ID!){archiveProjectV2Item(input:{projectId:$p,itemId:$i}){item{id isArchived}}}"
+M_SET = "mutation($p:ID!,$i:ID!,$f:ID!,$v:ProjectV2FieldValue!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:$v}){projectV2Item{id}}}"
+M_CLEAR = "mutation($p:ID!,$i:ID!,$f:ID!){clearProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f}){projectV2Item{id}}}"
+M_ATTACH = "mutation($i:ID!,$s:ID!){addSubIssue(input:{issueId:$i,subIssueId:$s,replaceParent:true}){issue{id}}}"
+M_DETACH = "mutation($i:ID!,$s:ID!){removeSubIssue(input:{issueId:$i,subIssueId:$s}){issue{id}}}"
+M_TYPE = "mutation($i:ID!,$t:ID){updateIssueIssueType(input:{issueId:$i,issueTypeId:$t}){issue{id}}}"
+M_LABEL_ADD = "mutation($i:ID!,$l:[ID!]!){addLabelsToLabelable(input:{labelableId:$i,labelIds:$l}){clientMutationId}}"
+M_LABEL_RM = "mutation($i:ID!,$l:[ID!]!){removeLabelsFromLabelable(input:{labelableId:$i,labelIds:$l}){clientMutationId}}"
+M_CLOSE = "mutation($i:ID!,$r:IssueClosedStateReason,$d:ID){closeIssue(input:{issueId:$i,stateReason:$r,duplicateIssueId:$d}){issue{id}}}"
+M_REOPEN = "mutation($i:ID!){reopenIssue(input:{issueId:$i}){issue{id}}}"
+M_RELATE = "mutation($i:ID!,$o:ID!){addRelatesTo(input:{issueId:$i,relatedIssueId:$o}){clientMutationId}}"
+M_UNRELATE = "mutation($i:ID!,$o:ID!){removeRelatesTo(input:{issueId:$i,relatedIssueId:$o}){clientMutationId}}"
+M_BLOCK = "mutation($i:ID!,$o:ID!){addBlockedBy(input:{issueId:$i,blockingIssueId:$o}){clientMutationId}}"
+M_UNBLOCK = "mutation($i:ID!,$o:ID!){removeBlockedBy(input:{issueId:$i,blockingIssueId:$o}){clientMutationId}}"
+M_ASSIGN = "mutation($i:ID!,$u:[ID!]!){addAssigneesToAssignable(input:{assignableId:$i,assigneeIds:$u}){clientMutationId}}"
+M_OPTIONS = """mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){
+  projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}"""
+Q_ITEM_FIELD = """query($i:ID!,$f:String!){node(id:$i){... on ProjectV2Item{isArchived fieldValueByName(name:$f){
+  ... on ProjectV2ItemFieldSingleSelectValue{name} ... on ProjectV2ItemFieldNumberValue{number}
+  ... on ProjectV2ItemFieldTextValue{text} ... on ProjectV2ItemFieldDateValue{date}}}}}"""
+
+
+def field_value(f, v):
+    t = f["type"]
+    if t == "SINGLE_SELECT":
+        return {"singleSelectOptionId": next(o["id"] for o in f["options"] if o["name"] == v)}
+    if t == "NUMBER":
+        return {"number": float(v)}
+    if t == "DATE":
+        return {"date": v}
+    return {"text": str(v)}
+
+
+def read_field(item_id, name):
+    v = gql(Q_ITEM_FIELD, i=item_id, f=name)["node"]["fieldValueByName"] or {}
+    return next(iter(v.values()), None)
+
+
+APPLIED, FAILED, NEEDS_REVIEW, SIDE_EFFECTS = 0, 1, 2, 3
+M_UNARCHIVE = "mutation($p:ID!,$i:ID!){unarchiveProjectV2Item(input:{projectId:$p,itemId:$i}){item{id}}}"
+Q_ITEM = "query($i:ID!){node(id:$i){... on ProjectV2Item{isArchived}}}"
+
+
+def apply_plan(b, boards, plan, approved=False, dry_run=False, log=print):
+    """Check, then apply, then read back. Returns APPLIED, FAILED (a write did not read back),
+    NEEDS_REVIEW (nothing written), or SIDE_EFFECTS (the plan's writes read back, but something
+    the plan did not name changed on a board; reported for the operator)."""
+    gh = GitHub()
+    snap = snapshot(b)
+    steps, reasons = check_plan(b, snap, plan, lambda r: gh.issue(r), gh.repo,
+                                body_of=lambda r: gh.issue(r)["body"], pr_info=gh.pr)
+    for n, op, _ in steps:
+        log(f"  {n}. {describe(op)}")
+    if reasons and not approved:
+        log("needs review before applying (--approved): " + "; ".join(reasons))
+        if not dry_run:
+            return NEEDS_REVIEW
+    if dry_run:
+        log("dry run: nothing written")
+        return APPLIED
+    before = {name: pull(bb, write=False) for name, bb in boards.items()}
+    idx, made, problems = by_ref(snap), {}, []
+    pid = snap["project_id"]
+
+    def real(ref):
+        return made[ref[1:]]["ref"] if ref.startswith("$") else ref
+
+    def iid(ref):
+        return made[ref[1:]]["id"] if ref.startswith("$") else gh.issue(ref)["id"]
+
+    def item_of(ref):
+        r = real(ref)
+        if r in idx:
+            return idx[r]["item_id"]
+        raise BoardError(f"{r} has no item on {b['name']}")
+
+    def expect(ok, what):
+        log(f"     read back: {what} {'ok' if ok else 'MISMATCH'}")
+        if not ok:
+            problems.append(what)
+
+    def add_item(content_id, ref):
+        try:
+            item = gql(M_ADD, p=pid, c=content_id)["addProjectV2ItemById"]["item"]["id"]
+            # The board's "Item added to project" workflow sets a Status shortly after an add;
+            # let it run before the plan sets fields, so it can't overwrite them.
+            time.sleep(b["settle_seconds"])
+        except BoardError as e:
+            if "already exists" not in str(e):
+                raise
+            # the board's auto-add got there first; take its item from a fresh read of the board
+            fresh = snapshot(b, write=False)
+            found = by_ref(fresh).get(ref) or next((x for x in prs_on(fresh) if x["pr_ref"] == ref), None)
+            if not found:
+                raise
+            item = found["item_id"]
+            log(f"     {ref} was already on {b['name']} (auto-added)")
+        if gql(Q_ITEM, i=item)["node"]["isArchived"]:
+            gql(M_UNARCHIVE, p=pid, i=item)
+            log(f"     {ref} was archived on {b['name']}; unarchived")
+        expect(not gql(Q_ITEM, i=item)["node"]["isArchived"], f"{ref} on {b['name']}")
+        idx[ref] = {"item_id": item}
+        return item
+
+    stopped = None
+    try:
+        for n, op, _ in steps:
+            k = op["op"]
+            log(f"{n}. {describe(op)}")
+            if k == "create":
+                repo = gh.repo(op["repo"])
+                ty = repo["types"][op["type"]] if op.get("type") else None
+                lab = [repo["labels"][x] for x in op.get("labels") or []]
+                iss = gql(M_CREATE, r=repo["id"], t=op["title"], b=op.get("body"), ty=ty,
+                          p=iid(op["parent"]) if op.get("parent") else None, l=lab or None)["createIssue"]["issue"]
+                ref = ref_of(iss)
+                made[op.get("as") or ref] = {"id": iss["id"], "ref": ref}
+                log(f"     created {ref} {iss['url']}")
+                item = add_item(iss["id"], ref)
+                for fname, v in (op.get("fields") or {}).items():
+                    f = snap["fields"][fname]
+                    gql(M_SET, p=pid, i=item, f=f["id"], v=field_value(f, v))
+                    expect(read_field(item, fname) == (float(v) if f["type"] == "NUMBER" else v), f"{ref} {fname}")
+                want_status = (op.get("fields") or {}).get("Status")
+                if want_status and b["settle_seconds"]:
+                    time.sleep(b["settle_seconds"])
+                    if read_field(item, "Status") != want_status:  # a workflow overwrote it
+                        f = snap["fields"]["Status"]
+                        gql(M_SET, p=pid, i=item, f=f["id"], v=field_value(f, want_status))
+                        log(f"     {ref} Status was overwritten by a board workflow; set it again")
+                        expect(read_field(item, "Status") == want_status, f"{ref} Status")
+                got = gh.issue(ref, fresh=True)
+                want_parent = real(op["parent"]) if op.get("parent") else None
+                expect(got["parent"] == want_parent and got["type"] == op.get("type")
+                       and set(op.get("labels") or []) <= set(got["labels"]), f"{ref} parent, type and labels")
+            elif k in ("set_field", "clear_field"):
+                f, item = snap["fields"][op["field"]], item_of(op["item"])
+                if k == "set_field":
+                    gql(M_SET, p=pid, i=item, f=f["id"], v=field_value(f, op["value"]))
+                    want = float(op["value"]) if f["type"] == "NUMBER" else op["value"]
+                else:
+                    gql(M_CLEAR, p=pid, i=item, f=f["id"])
+                    want = None
+                expect(read_field(item, op["field"]) == want, f"{real(op['item'])} {op['field']}")
+            elif k == "attach":
+                child, parent = real(op["child"]), real(op["parent"])
+                if gh.issue(child, fresh=True)["parent"] == parent:
+                    log(f"     {child} is already under {parent}")
+                else:
+                    gql(M_ATTACH, i=iid(op["parent"]), s=iid(op["child"]))
+                expect(gh.issue(child, fresh=True)["parent"] == parent, f"{child} parent")
+            elif k == "detach":
+                child = real(op["child"])
+                p = gh.issue(child, fresh=True)["parent"]
+                if p:
+                    gql(M_DETACH, i=gh.issue(p)["id"], s=iid(op["child"]))
+                expect(gh.issue(child, fresh=True)["parent"] is None, f"{child} has no parent")
+            elif k == "set_type":
+                r = real(op["item"])
+                repo = gh.repo(r.split("#")[0])
+                gql(M_TYPE, i=iid(op["item"]), t=repo["types"][op["type"]] if op["type"] else None)
+                expect(gh.issue(r, fresh=True)["type"] == op["type"], f"{r} type")
+            elif k == "label":
+                r = real(op["item"])
+                repo = gh.repo(r.split("#")[0])
+                for key, m in (("add", M_LABEL_ADD), ("remove", M_LABEL_RM)):
+                    names = op.get(key) or []
+                    if names:
+                        gql(m, i=iid(op["item"]), l=[repo["labels"][x] for x in names])
+                got = set(gh.issue(r, fresh=True)["labels"])
+                expect(set(op.get("add") or []) <= got and not (set(op.get("remove") or []) & got), f"{r} labels")
+            elif k == "add":
+                r = real(op["item"])
+                add_item(iid(op["item"]), r)
+            elif k == "remove":
+                r = real(op["item"])
+                res = gql(M_ARCHIVE, p=pid, i=item_of(op["item"]))["archiveProjectV2Item"]["item"]
+                expect(res["isArchived"], f"{r} archived")
+            elif k == "close":
+                r = real(op["item"])
+                reason = (op.get("reason") or ("duplicate" if op.get("duplicate_of") else "completed")).upper()
+                gql(M_CLOSE, i=iid(op["item"]), r=reason, d=iid(op["duplicate_of"]) if op.get("duplicate_of") else None)
+                got = gh.issue(r, fresh=True)
+                expect(got["state"] == "CLOSED" and got["reason"] == reason, f"{r} closed as {reason}")
+                time.sleep(b["settle_seconds"])  # let "Item closed" set its Status before later ops
+            elif k == "reopen":
+                r = real(op["item"])
+                gql(M_REOPEN, i=iid(op["item"]))
+                expect(gh.issue(r, fresh=True)["state"] == "OPEN", f"{r} open")
+                time.sleep(b["settle_seconds"])  # let "Item reopened" set its Status before later ops
+            elif k in ("relate", "unrelate", "block", "unblock"):
+                r, other = real(op["item"]), real(op[LINK_KEYS[k]])
+                m = {"relate": M_RELATE, "unrelate": M_UNRELATE, "block": M_BLOCK, "unblock": M_UNBLOCK}[k]
+                gql(m, i=iid(op["item"]), o=iid(op[LINK_KEYS[k]]))
+                got = gh.issue(r, fresh=True)["relates" if k in ("relate", "unrelate") else "blocked_by"]
+                expect((other in got) == (k in ("relate", "block")), f"{r} {k} {other}")
+            elif k == "add_pr":
+                pr = gh.pr(op["pr"])
+                item = add_item(pr["id"], op["pr"])
+                f = snap["fields"]["Status"]
+                gql(M_SET, p=pid, i=item, f=f["id"], v=field_value(f, b["statuses"]["review"]))
+                expect(read_field(item, "Status") == b["statuses"]["review"], f"{op['pr']} Status")
+            elif k == "add_options":
+                f = snap["fields"][op["field"]]
+                opts = [dict(o) for o in f["options"]] + [{"name": x, "color": "GRAY", "description": ""} for x in new_options(f, op)]
+                res = gql(M_OPTIONS, f=f["id"], o=opts)["updateProjectV2Field"]["projectV2Field"]["options"]
+                ids = {o["name"]: o["id"] for o in res}
+                expect(all(o["name"] in ids for o in opts), f"{op['field']} options")
+                expect(all(ids.get(o["name"]) == o["id"] for o in f["options"]), f"{op['field']} existing option ids kept")
+                missing = [o["name"] for o in opts if o["name"] not in ids]
+                if missing:
+                    raise BoardError(f"{op['field']}: GitHub did not return options {missing}")
+                f["options"] = [dict(o, id=ids[o["name"]]) for o in opts]
+    except BoardError as e:
+        stopped = e
+        problems.append(f"stopped: {e}")
+        log(f"     STOPPED: {e}; reading back every board before reporting")
+
+    # Read back every configured board. Items the plan named may change only in the fields it
+    # set; everything else must be as before. Items that appeared or left are reported, since
+    # the boards' sub-issue auto-add pulls whole subtrees, across owners too.
+    after = {name: pull(bb) for name, bb in boards.items()}
+
+    def named_ref(ref):  # an alias whose create never ran names nothing
+        return made[ref[1:]]["ref"] if ref.startswith("$") and ref[1:] in made else (None if ref.startswith("$") else ref)
+    may_appear, may_leave, may_change = set(), set(), set()
+    for op in expand(b, by_ref(snap), plan):
+        k = op["op"]
+        if k == "add":
+            may_appear.add((b["name"], named_ref(op["item"])))
+        if k == "remove":
+            may_leave.add((b["name"], named_ref(op["item"])))
+        for key, attrs in (("child", ("parent",)), ("item", {"set_type": ("issue_type",), "close": ("state",), "reopen": ("state",),
+                                                            "label": ("labels",)}.get(k, ()))):
+            if op.get(key) and k in ("attach", "detach", "set_type", "close", "reopen", "label"):
+                for attr in attrs:
+                    may_change.add((named_ref(op[key]), attr))
+    # The board's own workflows answer some writes: Status Done closes the issue ("Auto-close
+    # issue"), and closing or reopening sets Status ("Item closed", "Item reopened").
+    for op in plan:
+        if op["op"] == "set_field" and op.get("field") == "Status" and op.get("value") in (b["statuses"]["done"],):
+            may_change.add((named_ref(op["item"]), "state"))
+    expected_status = {named_ref(op["item"]) for op in plan if op["op"] in ("close", "reopen")}
+    created_refs = {m["ref"] for m in made.values()}
+    for r in created_refs:
+        may_appear.add((b["name"], r))
+    set_fields = {(named_ref(op["item"]), op["field"]) for op in plan if op["op"] in ("set_field", "clear_field")}
+    set_fields |= {(m["ref"], f) for op in plan if op["op"] == "create" for f in (op.get("fields") or {})
+                   for m in [made.get(op.get("as") or "")] if m}
+    option_fields = {op["field"] for op in plan if op["op"] == "add_options"}
+    side = []
+    for name in boards:
+        old, new = by_ref(before[name]), by_ref(after[name])
+        for r in sorted(set(new) - set(old)):
+            log(f"  board {name}: {r} appeared")
+            if (name, r) not in may_appear:
+                side.append(f"{name}: {r} appeared")
+        for r in sorted(set(old) - set(new)):
+            log(f"  board {name}: {r} left")
+            if (name, r) not in may_leave:
+                side.append(f"{name}: {r} left")
+        for r in sorted(set(old) & set(new)):
+            o, w = old[r], new[r]
+            for fname in sorted(set(o["fields"]) | set(w["fields"])):
+                if o["fields"].get(fname) == w["fields"].get(fname):
+                    continue
+                if name == b["name"] and (r, fname) in set_fields:
+                    continue
+                if fname == "Status" and r in expected_status and (r, "Status") not in set_fields:
+                    log(f"  board {name}: {r} Status {o['fields'].get(fname)!r} -> {w['fields'].get(fname)!r} (board workflow)")
+                    continue
+                msg = f"{name}: {r} {fname} {o['fields'].get(fname)!r} -> {w['fields'].get(fname)!r}"
+                (problems if fname in option_fields else side).append(msg)
+                log(f"  board {name}: {r} {fname} changed {o['fields'].get(fname)!r} -> {w['fields'].get(fname)!r} (not in the plan)")
+            for key in ("parent", "issue_type", "state", "labels"):
+                if o.get(key) != w.get(key) and (r, key) not in may_change:
+                    side.append(f"{name}: {r} {key} {o.get(key)!r} -> {w.get(key)!r}")
+                    log(f"  board {name}: {r} {key} changed {o.get(key)!r} -> {w.get(key)!r} (not in the plan)")
+    if stopped:
+        raise BoardError(f"plan stopped part-way ({stopped}); the read-back above shows what landed")
+    if problems:
+        log(f"{len(problems)} write(s) did not read back as planned")
+        return FAILED
+    if side:
+        log(f"applied; the plan's writes read back, but {len(side)} change(s) outside the plan appeared (above)")
+        return SIDE_EFFECTS
+    log("applied; every read-back matched")
+    return APPLIED
+
+
+# ---------------------------------------------------------------- claim and finish
+
+IN_PROGRESS = re.compile(r"^## What's in progress\s*$")
+
+
+def in_progress_span(lines, path):
+    heads = [i for i, l in enumerate(lines) if IN_PROGRESS.match(l)]
+    if not heads:
+        raise BoardError(f"{path} has no \"## What's in progress\" section")
+    start = heads[0] + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return start, end
+
+
+def status_md_claim(path, ref, url, title):
+    lines = read_text(path).splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    start, end = in_progress_span(lines, path)
+    body = [i for i in range(start, end) if lines[i].strip()]
+    entry = f"- [{ref}]({url}) {title} — claimed {now().date().isoformat()}\n"
+    if body and re.match(r"^- (Nothing in flight|None)\b", lines[body[0]]):
+        lines[body[0]] = entry
+    elif body and lines[body[0]].startswith("- "):
+        lines.insert(body[0], entry)
+    else:
+        lines[start:start] = ["\n", entry] + (["\n"] if body else [])
+    write_text(path, "".join(lines))
+
+
+def status_md_finish(path, url):
+    lines = read_text(path).splitlines(keepends=True)
+    start, end = in_progress_span(lines, path)
+    pat = re.compile(r"^\s*- \[[^\]]*\]\(" + re.escape(url) + r"\)")
+    drop = {i for i in range(start, end) if pat.match(lines[i])}
+    write_text(path, "".join(l for i, l in enumerate(lines) if i not in drop))
+    return len(drop)
+
+
+def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False, log=print):
+    """claim: refuse unless the item is open, at the select status and not assigned to someone
+    else (--force overrides); set In Progress, assign it to the gh login, add the STATUS.md line.
+    finish: set Done (Pending Release on a board whose repos release by tag, once a closing pull
+    request has merged), optionally close, and remove the STATUS.md line."""
+    if status_md:  # check the file before anything is written to the board
+        in_progress_span(read_text(status_md).splitlines(keepends=True), status_md)
+    snap = snapshot(b)
+    e = by_ref(snap).get(ref)
+    if e is None:
+        raise BoardError(f"{ref} is not on the {b['name']} board")
+    st = b["statuses"]
+    gh = GitHub()
+    if not finish and not force:
+        if e["state"] != "OPEN":
+            raise BoardError(f"{ref} is closed; reopen it before claiming")
+        if e["fields"].get("Status") != st["select"]:
+            raise BoardError(f"{ref} is at {e['fields'].get('Status')!r}, not {st['select']!r}; another session may hold it "
+                             "(use --force to claim anyway)")
+        others = [a for a in e.get("assignees", []) if a != gh.viewer()["login"]]
+        if others:
+            raise BoardError(f"{ref} is assigned to {', '.join(others)} (use --force to claim anyway)")
+    cross = owner_of(ref) != b["owner"]
+    plan = []
+    if finish and close and e["state"] == "OPEN":
+        plan.append({"op": "close", "item": ref, "reason": "completed", "cross_owner": cross})
+    merged = any(p.get("merged") for p in e.get("prs", []))
+    done = st["pending"] if finish and b.get("release") == "tags" and merged else st["done"]
+    plan.append({"op": "set_field", "item": ref, "field": "Status", "value": done if finish else st["claim"],
+                 "cross_owner": cross})
+    rc = apply_plan(b, boards, plan, approved=True, log=log)
+    if rc in (APPLIED, SIDE_EFFECTS) and not finish:
+        me = gh.viewer()
+        if me["login"] not in e.get("assignees", []):
+            gql(M_ASSIGN, i=e["issue_id"], u=[me["id"]])
+        ok = me["login"] in gh.issue(ref, fresh=True)["assignees"]
+        log(f"     read back: {ref} assigned to {me['login']} {'ok' if ok else 'MISMATCH'}")
+        if not ok:
+            rc = FAILED
+    if rc in (APPLIED, SIDE_EFFECTS) and status_md:
+        if finish:
+            log(f"STATUS.md: removed {status_md_finish(status_md, e['url'])} line(s)")
+        else:
+            status_md_claim(status_md, ref, e["url"], e["title"])
+            log(f"STATUS.md: claim recorded in {status_md}")
+    return rc
+
+
+# ---------------------------------------------------------------- pull requests and releases
+
+def boards_holding(boards, repo):
+    """Writable boards a repo's issues may sit on: those listing it in "repos", else its owner's."""
+    listed = [b for b in boards.values() if repo in b.get("repos", []) and not b.get("read_only")]
+    return listed or [b for b in boards.values() if b["owner"] == owner_of(repo) and not b.get("read_only")]
+
+
+def guard(boards, pr_ref, gh=None, log=print):
+    """After a pull request merges, keep the board Status of each issue it closes right. GitHub
+    closes the issue at the first closing pull request that merges, and the board's "Item closed"
+    workflow then sets Done; the issue may stay closed, but its Status follows the pull requests:
+    In Review while another closing pull request is open, and Done (Pending Release on a board
+    whose repos release by tag) once the last one has merged."""
+    gh = gh or GitHub()
+    pr = gh.pr(pr_ref)
+    if not pr["merged"]:
+        log(f"{pr_ref} is not merged; nothing to do")
+        return APPLIED
+    rc = APPLIED
+    for iss in pr["closes"]:
+        others = [x for x in iss["open_prs"] if x != pr_ref]
+        for b in boards_holding(boards, iss["ref"].split("#")[0]):
+            e = by_ref(pull(b)).get(iss["ref"])
+            if e is None:
+                continue
+            st = b["statuses"]
+            if others:
+                want = st["review"]
+                log(f"{iss['ref']} on {b['name']}: {', '.join(others)} still open; Status {want}")
+            else:
+                want = st["pending"] if b.get("release") == "tags" else st["done"]
+                log(f"{iss['ref']} on {b['name']}: last closing pull request merged; Status {want}")
+            if e["fields"].get("Status") == want:
+                continue
+            r = apply_plan(b, boards, [{"op": "set_field", "item": iss["ref"], "field": "Status", "value": want,
+                                        "cross_owner": owner_of(iss["ref"]) != b["owner"]}], approved=True, log=log)
+            rc = max(rc, r) if r != SIDE_EFFECTS else rc
+    return rc
+
+
+def in_release(repo, oid, tag):
+    """Whether a commit is part of a tag: the tag is ahead of, or identical to, the commit."""
+    d = rest(f"repos/{repo}/compare/{oid}...{tag}")
+    return bool(d) and d.get("status") in ("ahead", "identical")
+
+
+def release(b, boards, repo, tag, dry_run=False, included=in_release, log=print):
+    """Move the board's Pending Release items from one repo to Done once every merged pull
+    request that closed them is part of the tag."""
+    if included is in_release and rest(f"repos/{repo}/git/ref/tags/{tag}") is None:
+        raise BoardError(f"no tag {tag} in {repo}")
+    snap = pull(b)
+    plan = []
+    for e in sorted(by_ref(snap).values(), key=lambda e: e["ref"]):
+        if e["ref"].split("#")[0] != repo or e["fields"].get("Status") != b["statuses"]["pending"]:
+            continue
+        merged = [p for p in e.get("prs", []) if p.get("merged") and p.get("merge_oid")]
+        if not merged:
+            log(f"{e['ref']}: Pending Release with no merged pull request; left as it is")
+            continue
+        if all(included(p["ref"].split("#")[0], p["merge_oid"], tag) if p["ref"].split("#")[0] == repo else True
+               for p in merged):  # pull requests from other repos ship on their own tags
+            plan.append({"op": "set_field", "item": e["ref"], "field": "Status", "value": b["statuses"]["done"]})
+        else:
+            log(f"{e['ref']}: not in {tag} yet")
+    if not plan:
+        log(f"nothing on {b['name']} from {repo} is released by {tag}")
+        return APPLIED
+    return apply_plan(b, boards, plan, approved=True, dry_run=dry_run, log=log)
+
+
+# ---------------------------------------------------------------- fixture
+
+def reset_fixture_plan(b, snap):
+    """A plan that puts every fixture item on the board back to its resting state: open, the
+    configured resting Status, and no value in the fields listed in fixture.clear."""
+    fx, plan = b["fixture"], []
+    rest_status = (b.get("fixture_rest") or {}).get("Status")
+    for e in sorted(by_ref(snap).values(), key=lambda e: e["ref"]):
+        if not is_fixture(b, e):
+            continue
+        if e["state"] == "CLOSED":
+            plan.append({"op": "reopen", "item": e["ref"]})
+        if rest_status and e["fields"].get("Status") != rest_status:
+            plan.append({"op": "set_field", "item": e["ref"], "field": "Status", "value": rest_status})
+        if not rest_status and e["fields"].get("Status") is not None:
+            plan.append({"op": "clear_field", "item": e["ref"], "field": "Status"})
+        for f in fx.get("clear", []):
+            if e["fields"].get(f) is not None:
+                plan.append({"op": "clear_field", "item": e["ref"], "field": f})
+    return plan
+
+
+# ---------------------------------------------------------------- CLI
+
+# command -> (positional count as (min, max), options taking a value, boolean flags)
+COMMANDS = {
+    "boards": ((0, 0), (), ()),
+    "fields": ((1, 1), (), ()),
+    "snapshot": ((0, 99), (), ("--all",)),
+    "tree": ((2, 2), (), ()),
+    "search": ((2, 99), (), ()),
+    "select": ((1, 1), ("--repo", "--label", "--count"), ("--include-fixture",)),
+    "claim": ((2, 2), ("--status-md",), ("--force",)),
+    "finish": ((2, 2), ("--status-md",), ("--close",)),
+    "hygiene": ((1, 1), (), ("--include-fixture",)),
+    "xrefs": ((1, 1), (), ()),
+    "check": ((2, 2), (), ()),
+    "apply": ((2, 2), (), ("--approved",)),
+    "reset-fixture": ((1, 1), (), ("--dry-run",)),
+    "which": ((0, 0), (), ()),
+    "note": ((4, 99), ("--by",), ()),
+    "notes": ((2, 2), (), ()),
+    "guard": ((1, 1), (), ()),
+    "release": ((3, 3), (), ("--dry-run",)),
+}
+
+
+def parse(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        return None, [], {}
+    cmd, rest_ = argv[0], argv[1:]
+    if cmd not in COMMANDS:
+        raise BoardError(f"unknown command {cmd!r}; see board --help")
+    (lo, hi), with_value, flags = COMMANDS[cmd]
+    pos, opts, i = [], {}, 0
+    while i < len(rest_):
+        x = rest_[i]
+        if x in with_value:
+            if i + 1 >= len(rest_):
+                raise BoardError(f"{x} needs a value")
+            opts[x] = rest_[i + 1]
+            i += 2
+        elif x in flags:
+            opts[x] = True
+            i += 1
+        elif x.startswith("-"):
+            raise BoardError(f"{cmd} does not take {x}; see board --help")
+        else:
+            pos.append(x)
+            i += 1
+    if not lo <= len(pos) <= hi:
+        raise BoardError(f"{cmd} takes {lo if lo == hi else f'{lo} to {hi}'} argument(s), got {len(pos)}; see board --help")
+    if cmd == "snapshot" and bool(pos) == bool(opts.get("--all")):
+        raise BoardError("snapshot takes board names or --all")
+    return cmd, pos, opts
+
+
+def main(argv):
+    cmd, a, o = parse(list(argv))
+    if cmd is None:
+        print(__doc__)
+        return 0
+    boards = load_config()
+    if cmd == "boards":
+        for n, b in boards.items():
+            print(f'{n}: {b["owner_type"]} {b["owner"]} #{b["number"]}' + (" (read-only)" if b.get("read_only") else ""))
+    elif cmd == "fields":
+        print(json.dumps(fields(board_cfg(boards, a[0])), indent=1))
+    elif cmd == "snapshot":
+        failed = 0
+        for n in (list(boards) if o.get("--all") else a):
+            b = board_cfg(boards, n)
+            try:
+                s = pull(b)
+            except BoardError as e:
+                print(f"board: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            print(f"{b['name']}: {len(s['items'])} items -> {snapshot_path(b)}")
+        return 1 if failed else 0
+    elif cmd == "tree":
+        b = board_cfg(boards, a[0])
+        print(tree(b, load_snapshot(b), a[1]))
+    elif cmd == "search":
+        for r, st, t in search(a[0], " ".join(a[1:])):
+            print(f"{r}  {st}  {t}")
+    elif cmd == "select":
+        b = board_cfg(boards, a[0])
+        picks, skipped = select(b, load_snapshot(b), o.get("--repo"), o.get("--label"), int(o.get("--count", "1")),
+                                include_fixture=o.get("--include-fixture", False))
+        for e in picks:
+            print(f'{e["ref"]}  {e["fields"]["Priority"]}  effort {e["fields"].get("Effort") if e["fields"].get("Effort") is not None else "-"}  {e["title"]}')
+        for r, why in skipped:
+            print(f"skipped {r}: {why}", file=sys.stderr)
+        if not picks:
+            print("nothing selectable", file=sys.stderr)
+            return 1
+    elif cmd in ("claim", "finish"):
+        b = board_cfg(boards, a[0])
+        return claim(b, boards, a[1], o.get("--status-md"), finish=cmd == "finish", close=o.get("--close", False),
+                     force=o.get("--force", False))
+    elif cmd == "hygiene":
+        b = board_cfg(boards, a[0])
+        rows = hygiene(b, load_snapshot(b), o.get("--include-fixture", False), open_prs=unlinked_prs)
+        for kind, r, msg in rows:
+            print(f"{kind:12} {r}  {msg}")
+        print(f"{len(rows)} finding(s)")
+    elif cmd == "xrefs":
+        b = board_cfg(boards, a[0])
+        for r, s, t, title in xrefs(b, load_snapshot(b)):
+            print(f"{r}  source={s} target={t}  {title}")
+    elif cmd == "reset-fixture":
+        b = board_cfg(boards, a[0])
+        plan = reset_fixture_plan(b, snapshot(b))
+        if not plan:
+            print(f"the {b['name']} fixture is already at rest")
+            return 0
+        return apply_plan(b, boards, plan, dry_run=o.get("--dry-run", False))
+    elif cmd == "which":
+        repo = current_repo()
+        if not repo:
+            raise BoardError("this directory's origin remote is not on GitHub")
+        print(f"{repo}: {board_for_repo(boards, repo)['name']}")
+    elif cmd == "note":
+        b = board_cfg(boards, a[0])
+        by = o.get("--by") or os.environ.get("BOARD_AGENT") or os.environ.get("USER") or "unknown"
+        e = add_note(b, a[1], a[2], " ".join(a[3:]), by)
+        print(f'{a[1]}: noted {e["kind"]} at {e["at"]} (basis {e["basis_updated"]})')
+    elif cmd == "notes":
+        b = board_cfg(boards, a[0])
+        for x in notes(load_snapshot(b), a[1]):
+            print(f'{x["at"]}  {x["kind"]:18} {x["by"]:12} {"STALE " if x["stale"] else ""}{x["value"]}')
+    elif cmd == "guard":
+        return guard(boards, a[0])
+    elif cmd == "release":
+        b = board_cfg(boards, a[0])
+        return release(b, boards, a[1], a[2], dry_run=o.get("--dry-run", False))
+    elif cmd in ("check", "apply"):
+        b = board_cfg(boards, a[0])
+        try:
+            plan = json.loads(read_text(a[1]))
+        except ValueError as e:
+            raise BoardError(f"{a[1]} is not valid JSON: {e}")
+        return apply_plan(b, boards, plan, approved=o.get("--approved", False), dry_run=cmd == "check")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BoardError as e:
+        sys.exit(f"board: {e}")
+    except OSError as e:
+        sys.exit(f"board: {e.strerror or e}: {e.filename or ''}")
+    except (KeyError, TypeError, ValueError) as e:
+        sys.exit(f"board: bad input ({type(e).__name__}: {e}); see board --help")

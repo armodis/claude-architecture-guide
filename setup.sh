@@ -101,6 +101,17 @@ if [ "${#STOW_PACKAGES[@]}" -gt 0 ]; then
   done
 fi
 
+# ─── Optional: daily board refresh timer (systemd user session) ───────────
+if [[ " ${STOW_PACKAGES[*]} " == *" board "* ]] && command -v systemctl >/dev/null 2>&1 \
+   && systemctl --user show-environment >/dev/null 2>&1; then
+  info "Enabling the daily board refresh timer"
+  systemctl --user daemon-reload
+  systemctl --user enable --now board-refresh.timer >/dev/null 2>&1 \
+    && echo "  board-refresh.timer enabled" || warn "could not enable board-refresh.timer"
+elif [[ " ${STOW_PACKAGES[*]} " == *" board "* ]]; then
+  warn "no systemd user session: refresh boards daily another way, e.g. cron: 0 6 * * * \$HOME/.local/bin/board snapshot --all"
+fi
+
 # ─── Optional: skill overlays -> ~/<domain>/.claude/ ──────────────────────
 if [ "${#SKILL_OVERLAYS[@]}" -gt 0 ]; then
   info "Aggregating skill overlays"

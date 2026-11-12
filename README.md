@@ -14,7 +14,7 @@ The fastest way to adopt this is to let a Claude Code session drive. Open Claude
 
 > Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
-The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, starting with the [design loop](#the-design-loop); the agent authors the skills specific to your work with you.
+The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
 
 **Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and `gh` authenticated (only for the board workflow).
 
@@ -43,6 +43,7 @@ $EDITOR setup.sh      # edit the CONFIG block: DOMAINS=(work personal ...)
 What ships alongside this guide:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
+- **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`) and an example board config (into `~/.config/board/`).
 - **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots).
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
@@ -426,7 +427,7 @@ Three sections, all forward-pointing — no rolling history (git is the history)
 
 ## What's in progress
 (Issues currently claimed by an active session — see Concurrency & Claiming.
- Format: `- #N — <brief> (claimed YYYY-MM-DD by session <name>)`)
+ Format, as `board claim` writes it: `- [owner/repo#N](issue URL) <title> — claimed YYYY-MM-DD`)
 
 ## What's next
 (1–3 concrete next actions. Annotate each issue with `(P_, E_)` from the
@@ -511,7 +512,36 @@ Work only a person can do is assigned to that person while it's still in Todo or
 - **By status:** an assignee from In Progress on; what done looks like before Todo.
 - **Optional:** dates, and a Team field if you add one.
 
-**Done and releases.** In a repo with no release process, a merged closing pull request means Done. On a board whose repos all release by tag, the issue still closes on merge, but that board's "Item closed" workflow sets Pending Release instead of Done; a release workflow moves released items to Done, and whoever closes an issue as not planned or duplicate sets it to Done. GitHub closes an issue when the *first* pull request that says `closes #N` merges, so when several pull requests deliver one issue, only the last one says `closes #N` and the earlier ones say `refs #N`. The release workflow isn't shipped yet ([#11](https://github.com/armodis/claude-architecture-guide/issues/11)); it needs a token that can write to Projects — a GitHub App installation token for an organization board, or a personal access token with the `project` scope for a user board — because the default `GITHUB_TOKEN` can't.
+**Done and releases.** In a repo with no release process, a merged closing pull request means Done. On a board whose repos all release by tag, the issue still closes on merge, but that board's "Item closed" workflow sets Pending Release instead of Done; a release workflow moves released items to Done, and whoever closes an issue as not planned or duplicate sets it to Done. GitHub closes an issue when the *first* pull request that says `closes #N` merges, even while others that close it are open. The issue may stay closed; the board Status is what tracks the work. When several pull requests deliver one issue, each says `closes #N`, and `board guard` (run by the repo's board workflow on every merge) keeps the issue at In Review until the last one merges, then sets Done, or Pending Release on a tag-release board. In a repo without the workflow's token, say `refs #N` on all but the last. The workflow is [`template/repo/.github/workflows/board.yml`](template/repo/.github/workflows/board.yml); it needs a token that can write to Projects — a GitHub App installation token for an organization board, or a personal access token with the `project` scope for a user board — because the default `GITHUB_TOKEN` can't.
+
+### The board command and skills
+
+Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences in `~/.config/board/boards.json` (owner, hierarchy, statuses, the repos that feed it, whether they release by tag, read-only). Start from [`boards.example.json`](template/board/.config/board/boards.example.json); `provision.py` writes the entries for you.
+
+- **Reads** work from a snapshot of each board in `~/.local/state/board`: `snapshot`, `tree`, `select`, `hygiene`. A snapshot older than a day is pulled again on read, and a daily timer (`board-refresh.timer`, enabled by `setup.sh`) keeps them fresh. `search` is a live title search. Inside a repo, `.` names the repo's board.
+- **Writes** are JSON change plans: `check` prints the dry run, and `apply` writes the plan and reads back every write and every configured board. A plan that is hard to undo (close, reparent, change level or type, remove, edit options, cross owners, or touch many items) waits for `--approved`.
+- **Rules** every plan is checked against:
+  - the required fields at create, and again before Todo, along with a "Done when:" line;
+  - no upside-down parent links;
+  - no mentions of another owner's issues in text it writes, since `relate` and `block` link across owners without writing into their timelines;
+  - promotion and demotion change the issue type with the level.
+- **Claims:** `claim` refuses an item that isn't open at Todo or that someone else holds, then sets In Progress, assigns you, and adds the STATUS.md line; `finish` sets Done (Pending Release on a tag-release board) and removes it.
+- **Hygiene** reports:
+  - missing required fields;
+  - stale claims;
+  - orphans and level problems;
+  - Status that disagrees with the issue's state;
+  - linked pull requests that disagree with In Review;
+  - issues closed while a closing pull request is still open;
+  - open pull requests that close no issue and aren't on the board.
+- **Analysis notes:** `note` appends a finding to an item's record (kind, text, who, when, and the issue's `updatedAt` at the time); `notes` reads them back, marking any written before the issue last changed. A refresh keeps them.
+- **Pull requests and releases:**
+  - `add_pr` puts a pull request that closes no issue on the board at In Review.
+  - [`template/repo/.github/workflows/board.yml`](template/repo/.github/workflows/board.yml) runs `board guard` when a pull request merges: an issue that another open pull request also closes goes back to In Review (it stays closed), and goes to Done or Pending Release when the last one merges.
+  - On a tag-release repo, the same workflow runs `board release` when a release is published, which moves released items from Pending Release to Done.
+- **Tests:** `python3 -m unittest discover -s tests/board` runs the offline suite against a made-up config; [`tests/board/live_fixture.py`](tests/board/live_fixture.py) runs the commands against a real board's labelled test fixture.
+
+Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, links, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema.
 
 ### Hierarchy via Category + sub-issues
 
@@ -598,8 +628,8 @@ The session adds the issue to its repo's `STATUS.md` under a "What's in progress
 ```markdown
 ## What's in progress
 
-- #176 — /theme-operator Audit-Reconcile (claimed 2026-05-28 by session `substrate`)
-- #180 — issue-reviewer PR-title citations (claimed 2026-05-28 by session `accounting`)
+- [acme/planning#176](https://github.com/acme/planning/issues/176) Audit-Reconcile — claimed 2026-05-28
+- [acme/planning#180](https://github.com/acme/planning/issues/180) PR-title citations — claimed 2026-05-28
 ```
 
 When the work lands (PR merged, issue closed), the session moves the entry from "What's in progress" to "What just happened" and commits.

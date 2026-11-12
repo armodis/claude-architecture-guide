@@ -1,0 +1,92 @@
+{
+  "defaults": {
+    "statuses": {
+      "select": "Todo",
+      "backlog": "Backlog",
+      "claim": "In Progress",
+      "review": "In Review",
+      "pending": "Pending Release",
+      "done": "Done"
+    },
+    "leaf_type": "Task",
+    "parent_type": "Feature",
+    "required_fields": [
+      "Status",
+      "Priority",
+      "Theme",
+      "Complexity"
+    ],
+    "effort_levels": [
+      "User Story",
+      "Task"
+    ],
+    "freshness_hours": 24,
+    "stale_days": 7,
+    "review_over_items": 10,
+    "fixture": {
+      "label": "test-fixture",
+      "title_prefix": "[Test fixture]",
+      "clear": [
+        "Priority",
+        "Effort"
+      ]
+    }
+  },
+  "boards": {
+    "company": {
+      "owner": "your-org",
+      "owner_type": "organization",
+      "number": 1,
+      "repos": [
+        "your-org/ops"
+      ],
+      "release": "none",
+      "hierarchy": [
+        "Objective",
+        "Key Result",
+        "Initiative",
+        "Milestone",
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": [],
+      "org_label": "Your Org",
+      "xref_fields": [
+        "Source Org",
+        "Target Org"
+      ]
+    },
+    "product": {
+      "owner": "your-org",
+      "owner_type": "organization",
+      "number": 2,
+      "repos": [
+        "your-org/your-product"
+      ],
+      "release": "tags",
+      "hierarchy": [
+        "Milestone",
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": []
+    },
+    "personal": {
+      "owner": "your-user",
+      "owner_type": "user",
+      "number": 1,
+      "repos": [
+        "your-user/tasks"
+      ],
+      "release": "none",
+      "hierarchy": [
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": [],
+      "fixture_rest": {
+        "Status": "Backlog"
+      }
+    }
+  }
+}
