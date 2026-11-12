@@ -27,7 +27,7 @@ class FakeGH:
             # GitHub's query matches loosely; provision.py keeps exact titles only
             nodes = [{"id": b["id"], "number": b["number"], "title": b["title"], "url": f"https://x/{b['number']}", "closed": False}
                      for b in self.boards.get(v["l"], []) if v["t"].split()[0].lower() in b["title"].lower()]
-            return {"repositoryOwner": {"projectsV2": {"nodes": nodes}}}
+            return {"repositoryOwner": {"projectsV2": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}
         if "repositoryOwner" in q:
             t = self.owners.get(v["l"])
             if not t:
@@ -75,6 +75,12 @@ class FakeGH:
 
     def git_identity(self):
         return "dev@example.com"
+
+    def is_empty(self, name):
+        return name in getattr(self, "empty", set())
+
+    def scopes(self):
+        return {"repo", "project", "read:org", "workflow"}
 
     def run(self, args, input=None, cwd=None, check=True):
         self.writes.append(("gh", args[0], args[1]))
@@ -182,11 +188,11 @@ class Runs(unittest.TestCase):
         gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
                     labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
         with open(self.cfgpath, "w") as f:
-            json.dump({"defaults": {}, "boards": {"widget": {"owner": "acme-co", "number": 3}}}, f)
+            json.dump({"defaults": {}, "boards": {"widget": {"owner": "acme-co", "number": 3, "repos": ["acme-co/widget"]}}}, f)
         code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
         self.assertEqual((code, gh.writes), (0, []), log)
         self.assertIn("Everything is in place", log)
-        self.assertEqual(pv.read_json(self.cfgpath)["boards"]["widget"], {"owner": "acme-co", "number": 3},
+        self.assertEqual(pv.read_json(self.cfgpath)["boards"]["widget"], {"owner": "acme-co", "number": 3, "repos": ["acme-co/widget"]},
                          "existing config entries are kept as they are")
 
     def test_disabled_workflows_are_reported_with_the_page(self):
@@ -239,6 +245,26 @@ class ReviewCases(unittest.TestCase):
         code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
         self.assertEqual(code, 2)
         self.assertIn("points at your-org #2, not acme-co #3", log)
+
+    def test_empty_repo_and_config_drift_are_reported(self):
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": ["Epic"], "themes": ["Data", "App"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        gh.empty = {"acme-co/ops"}
+        with open(self.cfgpath, "w") as f:
+            json.dump({"boards": {"widget": {"owner": "acme-co", "number": 3, "repos": [], "hierarchy": ["Epic"]}}}, f)
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertEqual(code, 2)
+        self.assertIn("repo acme-co/ops exists but is empty", log)
+        self.assertIn("differs from GitHub in repos", log)
+
+    def test_missing_workflow_scope_stops_before_creating(self):
+        gh = FakeGH({"acme-co": "Organization"})
+        gh.scopes = lambda: {"repo", "project", "read:org"}
+        org = dict(ORG, repos=[dict(r, path=os.path.join(self.home, r["name"])) for r in ORG["repos"]])
+        with self.assertRaisesRegex(pv.ProvisionError, "workflow scope"):
+            run(gh, {"owners": [org]}, False, self.cfgpath)
+        self.assertEqual(gh.writes, [])
 
     def test_new_repo_layout_includes_the_board_workflow(self):
         self.assertIn(".github/workflows/board.yml", pv.scaffold("acme-co", {"name": "ops"}))

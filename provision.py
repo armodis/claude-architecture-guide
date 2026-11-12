@@ -21,12 +21,12 @@ Reads github.json (copy github.example.json and edit it). For each owner it:
 
 Re-runnable: it finds what exists by name and only creates what's missing. A --live run ends
 with a fresh rehearsal, so the report reads back what landed. Needs `gh`, logged in with the
-`repo`, `project` and `read:org` scopes, `git` with user.name and user.email set, and python3.
+`repo`, `project`, `read:org` and `workflow` scopes, `git` with user.name and user.email set, and python3.
 
 Exit codes: 0 everything in place; 1 an error; 2 steps remain (rehearsal, or something only the
 web UI can do).
 """
-import json, os, subprocess, sys
+import json, os, subprocess, sys, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOWS = ["Item closed", "Item reopened", "Pull request linked to issue", "Pull request merged",
@@ -73,6 +73,19 @@ class GH:
             return None
         raise ProvisionError(f"gh api {path}: {r.stderr.strip()}")
 
+    def is_empty(self, name):
+        """Whether a repo has no commits: GitHub answers 409 for its commit list."""
+        r = self.run(["api", f"repos/{name}/commits?per_page=1"], check=False)
+        return r.returncode != 0 and ("409" in r.stderr or "empty" in r.stderr.lower())
+
+    def scopes(self):
+        """The token's OAuth scopes, or None when GitHub doesn't report them (fine-grained tokens)."""
+        r = self.run(["api", "-i", "user"], check=False)
+        for line in r.stdout.splitlines():
+            if line.lower().startswith("x-oauth-scopes:"):
+                return {x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()}
+        return None
+
     def git_identity(self):
         r = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True)
         return r.stdout.strip()
@@ -84,9 +97,9 @@ class GH:
 
 
 OWNER_Q = """query($l:String!){repositoryOwner(login:$l){__typename id login}}"""
-BOARDS_Q = """query($l:String!,$t:String!){repositoryOwner(login:$l){
-  ... on Organization{projectsV2(first:50, query:$t){nodes{id number title url closed}}}
-  ... on User{projectsV2(first:50, query:$t){nodes{id number title url closed}}}}}"""
+BOARDS_Q = """query($l:String!,$t:String!,$a:String){repositoryOwner(login:$l){
+  ... on Organization{projectsV2(first:100, query:$t, after:$a){pageInfo{hasNextPage endCursor} nodes{id number title url closed}}}
+  ... on User{projectsV2(first:100, query:$t, after:$a){pageInfo{hasNextPage endCursor} nodes{id number title url closed}}}}}"""
 TEMPLATE_Q = """query($l:String!,$n:Int!){organization(login:$l){projectV2(number:$n){id title template}}}"""
 BOARD_Q = """query($p:ID!){node(id:$p){... on ProjectV2{number url
   repositories(first:50){nodes{nameWithOwner}}
@@ -122,6 +135,8 @@ def load(path):
                 raise ProvisionError(f"{path}: repo {r['name']}: release must be none or tags")
         repos = {r["name"] for r in o.get("repos", [])}
         for b in o.get("boards", []):
+            if not isinstance(b, dict):
+                raise ProvisionError(f"{path}: each board of {o['login']} is an object")
             for k in ("name", "title", "template"):
                 if not b.get(k):
                     raise ProvisionError(f"{path}: a board of {o['login']} is missing \"{k}\"")
@@ -216,7 +231,13 @@ class Run:
             repo_ids[r["name"]] = self.repo(login, r)
         release = {r["name"]: r.get("release", "none") for r in o.get("repos", [])}
         for b in o.get("boards", []):
-            found = self.gh.graphql(BOARDS_Q, l=login, t=b["title"])["repositoryOwner"]["projectsV2"]["nodes"]
+            found, after = [], None
+            while True:  # GitHub's search matches words loosely; page through and keep exact titles
+                page = self.gh.graphql(BOARDS_Q, l=login, t=b["title"], a=after)["repositoryOwner"]["projectsV2"]
+                found += page["nodes"]
+                if not (page.get("pageInfo") or {}).get("hasNextPage"):
+                    break
+                after = page["pageInfo"]["endCursor"]
             boards = {p["title"]: p for p in found if not p["closed"] and p["title"] == b["title"]}
             self.board(login, typ, node["id"], boards, b, repo_ids, release)
 
@@ -225,7 +246,7 @@ class Run:
         found = self.gh.rest(f"repos/{name}")
         if found:
             rid = found["node_id"]
-            if found.get("size") == 0 and not found.get("pushed_at"):
+            if self.gh.is_empty(name):
                 self.by_hand(f"repo {name} exists but is empty: push its layout (or delete it and run this again)")
             else:
                 self.say("✓", f"repo {name}")
@@ -235,6 +256,10 @@ class Run:
                 raise ProvisionError(f"{path} exists and isn't an empty folder; set \"path\" for {name}")
             if not self.gh.git_identity():
                 raise ProvisionError("git has no user.email; set user.name and user.email before creating repos")
+            scopes = self.gh.scopes()
+            if scopes is not None and "workflow" not in scopes and os.path.exists(WORKFLOW):
+                raise ProvisionError("the gh token lacks the workflow scope, which pushing .github/workflows/ needs: "
+                                     "gh auth refresh -s workflow")
             self.pending(f"repo {name} ({'public' if r.get('public') else 'private'}, {r.get('kind', 'plain')} layout, at {path})")
             if not self.live:
                 return None
@@ -252,7 +277,7 @@ class Run:
             rid = self.gh.rest(f"repos/{name}")["node_id"]
             self.say("✓", f"repo {name} created, layout pushed from {path}")
         label = self.fixture_label
-        if self.gh.rest(f"repos/{name}/labels/{label}") is None:
+        if self.gh.rest(f"repos/{name}/labels/{urllib.parse.quote(label, safe='')}") is None:
             self.pending(f"label {label} on {name}")
             if self.live:
                 self.gh.run(["label", "create", label, "--repo", name, "--color", FIXTURE_LABEL[1],
@@ -327,6 +352,15 @@ class Run:
             if old and any(old.get(x, v[x]) != v[x] for x in ("owner", "owner_type", "number")):
                 self.by_hand(f"board config entry {k!r} points at {old.get('owner')} #{old.get('number')}, not "
                              f"{v['owner']} #{v['number']}: fix or remove it in {self.config_path}")
+            elif old:
+                same = {"repos": lambda a, b: sorted(a) == sorted(b)}  # repo order doesn't matter; level order does
+                drift = [x for x in ("repos", "release", "hierarchy")
+                         if x in old and not same.get(x, lambda a, b: a == b)(old[x], v[x])]
+                if "repos" not in old and v["repos"]:
+                    drift.append("repos")
+                if drift:
+                    self.by_hand(f"board config entry {k!r} differs from GitHub in {', '.join(drift)}: set "
+                                 + "; ".join(f"{x} = {json.dumps(v[x])}" for x in drift) + f" in {self.config_path}")
         add = {k: v for k, v in self.entries.items() if k not in have}
         if not add:
             if self.entries:
@@ -352,7 +386,7 @@ class Run:
             again = Run(self.gh, self.cfg, False, self.config_path, self.out)
             return again.go()
         if self.manual:
-            self.out(f"{len(self.manual)} step(s) need the web UI (marked !); run this again after them.")
+            self.out(f"{len(self.manual)} step(s) to do by hand (marked !); run this again after them.")
         if not self.todo and not self.manual:
             self.out("Everything is in place.")
         return 2 if (self.manual or (self.todo and not self.live)) else 0
