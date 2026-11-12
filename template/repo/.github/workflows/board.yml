@@ -8,16 +8,20 @@
 #   - When a release is published (repos that release by tag): `board release` moves this repo's
 #     Pending Release items whose merged pull requests are in the tag to Done.
 #
-# Needs, in the repo's settings:
-#   - secret BOARD_TOKEN: a token that can write to the board, which the default GITHUB_TOKEN
-#     can't: a GitHub App installation token for an organization board, or a personal access
-#     token with the repo and project scopes.
+# Needs, in the repo's (or its organization's) Actions settings:
+#   - a token that can write to the board, which the default GITHUB_TOKEN can't. Either:
+#       - variable BOARD_APP_ID and secret BOARD_APP_KEY: a GitHub App with Projects read and
+#         write, installed on the organization; the job mints a short-lived token each run
+#         (the choice for an organization board), or
+#       - secret BOARD_TOKEN: a personal access token with the repo and project scopes (the
+#         choice for a user board, which GitHub Apps can't reach).
 #   - variable BOARD_CONFIG: the JSON of the board config (as in ~/.config/board/boards.json),
 #     with this repo listed in its board's "repos".
 #   - variable BOARD_REF (optional): the guide commit to take the board command from; pin a
 #     commit SHA. Defaults to main.
-# Without BOARD_TOKEN the job skips. Pull requests from forks and Dependabot get no secrets, so
-# their merges skip too; run `board guard owner/repo#N` by hand for those.
+# Without a token or BOARD_CONFIG the job says what's missing and passes. Pull requests from
+# forks and Dependabot get no secrets, so their merges skip too; run `board guard owner/repo#N`
+# by hand for those.
 name: board
 
 on:
@@ -34,31 +38,54 @@ jobs:
     if: github.event_name == 'release' || github.event.pull_request.merged
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.BOARD_TOKEN }}
       BOARD_CONFIG: ${{ github.workspace }}/.board.json
       BOARD_REF: ${{ vars.BOARD_REF || 'main' }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
-      - name: Skip without a token
-        if: env.GH_TOKEN == ''
-        run: echo "BOARD_TOKEN is not set; board automation skipped"
+      - name: Mint a GitHub App token
+        id: app
+        if: vars.BOARD_APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOARD_APP_ID }}
+          private-key: ${{ secrets.BOARD_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+      - name: Check the token and config
+        id: ready
+        env:
+          TOKEN: ${{ steps.app.outputs.token || secrets.BOARD_TOKEN }}
+          CONFIG_JSON: ${{ vars.BOARD_CONFIG }}
+        run: |
+          missing=""
+          [ -n "$TOKEN" ] || missing="a token (BOARD_APP_ID and BOARD_APP_KEY, or BOARD_TOKEN)"
+          [ -n "$CONFIG_JSON" ] || missing="${missing:+$missing and }the BOARD_CONFIG variable"
+          if [ -n "$missing" ]; then
+            echo "Board automation skipped: set $missing in the repo's Actions settings."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install the board command
-        if: env.GH_TOKEN != ''
+        if: steps.ready.outputs.go == 'true'
         env:
           CONFIG_JSON: ${{ vars.BOARD_CONFIG }}
         run: |
           printf '%s' "$CONFIG_JSON" > "$BOARD_CONFIG"
           curl -fsSL "https://raw.githubusercontent.com/armodis/claude-architecture-guide/${BOARD_REF}/template/board/.local/bin/board" -o "$RUNNER_TEMP/board"
           chmod +x "$RUNNER_TEMP/board"
-      - name: Guard issues other pull requests still close
-        if: env.GH_TOKEN != '' && github.event_name == 'pull_request'
+      - name: Keep the board Status right for issues this merge closed
+        if: steps.ready.outputs.go == 'true' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.BOARD_TOKEN }}
         run: |
           rc=0; "$RUNNER_TEMP/board" guard "$REPO#$PR_NUMBER" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
       - name: Move released items to Done
-        if: env.GH_TOKEN != '' && github.event_name == 'release'
+        if: steps.ready.outputs.go == 'true' && github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || secrets.BOARD_TOKEN }}
         run: |
           board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "$REPO")
           rc=0; "$RUNNER_TEMP/board" release "$board_name" "$REPO" "$TAG" || rc=$?

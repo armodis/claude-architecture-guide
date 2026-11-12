@@ -20,7 +20,7 @@ Add the board to `boards.json` so `board` can work on it:
 
 - `owner`, `owner_type` (`organization` or `user`), `number`.
 - `repos`: the repos that feed it, so `board .` and `board which` find it from inside a repo.
-- `hierarchy`: the Category levels, top first; `outside_hierarchy` for levels off the ladder.
+- `hierarchy`: the Category levels, top first; `outside_hierarchy` for levels off the ladder; `parent_optional` for levels that may stand alone (for example `["Task"]` on a personal board).
 - `release`: `none`, or `tags` when its repos release by tag.
 - `statuses`, only to rename one (for example `{"done": "Shipped"}`); the rest keep their defaults.
 - `read_only: true` for a board agents may only read.

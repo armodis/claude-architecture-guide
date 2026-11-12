@@ -69,7 +69,8 @@ Rules every plan is checked against:
     of relate and block may be any issue: those links work across owners and move nothing.
   - A create carries the board's required fields: required_fields (Status, Priority, Theme,
     Complexity), a type, Effort on effort_levels, Category on the parent type, and a parent
-    below the top level (levels in parent_optional, such as standalone personal Tasks, may go without). Moving an issue to Todo needs the same, plus a done-when line in its
+    below the top level (levels in parent_optional, such as standalone personal Tasks, may go
+    without). Moving an issue to Todo needs the same, plus a done-when line in its
     body (done_marker). Test-fixture items are exempt.
   - A parent link that puts a level under the same or a lower one is refused; skipped levels
     are allowed and reported by hygiene.

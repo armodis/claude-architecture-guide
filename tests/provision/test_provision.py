@@ -70,9 +70,15 @@ class FakeGH:
         if len(parts) == 3:  # repos/<owner>/<name>; GitHub answers 404 for a missing repo
             full = f"{parts[1]}/{parts[2]}"
             return {"node_id": f"R_{full}", "size": 1, "pushed_at": "2026-01-01"} if full in self.repos else None
-        if parts[3] in ("contents", "actions"):  # the board workflow, its secret and variable
-            what = "/".join(parts[3:])
-            return None if what in getattr(self, "absent", set()) else {}
+        if parts[3] == "contents":  # the board workflow file
+            return None if "workflow" in getattr(self, "absent", set()) else {}
+        if parts[3] == "actions":  # secret and variable lists, repo and organization level
+            if getattr(self, "actions_forbidden", False):
+                raise pv.ProvisionError(f"gh api {path}: HTTP 403")
+            kind = parts[4].split("?")[0]
+            have = getattr(self, "actions", {"actions/secrets": ["BOARD_TOKEN"], "actions/variables": ["BOARD_CONFIG"]})
+            key = "secrets" if kind.endswith("secrets") else "variables"
+            return {key: [{"name": x} for x in have.get("actions/" + kind, [])]}
         _, owner, name, _, label = parts
         return {} if f"{owner}/{name}:{label}" in self.labels else None
 
@@ -269,19 +275,39 @@ class ReviewCases(unittest.TestCase):
             run(gh, {"owners": [org]}, False, self.cfgpath)
         self.assertEqual(gh.writes, [])
 
-    def test_missing_board_automation_is_a_step_by_hand(self):
+    def automation_run(self, **attrs):
         board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
         gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
                     labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
-        gh.absent = {"actions/secrets/BOARD_TOKEN"}
-        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        for k, v in attrs.pop("gh", {}).items():
+            setattr(gh, k, v)
+        org = attrs.pop("org", ORG)
+        code, log = run(gh, {"owners": [org]}, True, self.cfgpath)
+        return code, log, gh
+
+    def test_missing_token_or_config_is_a_step_by_hand(self):
+        code, log, gh = self.automation_run(gh={"actions": {"actions/variables": ["BOARD_CONFIG"]}})
         self.assertEqual(code, 2)
-        self.assertIn("acme-co/ops: add secret BOARD_TOKEN", log)
-        self.assertNotIn("BOARD_CONFIG", log)
-        gh.absent = {"contents/.github/workflows/board.yml"}
-        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
-        self.assertIn("copy template/repo/.github/workflows/board.yml", log)
+        self.assertIn("acme-co/ops: add a token", log)
+        self.assertNotIn("variable BOARD_CONFIG (the board", log)
         self.assertEqual([w for w in gh.writes if w[0] != "options"], [], "nothing is set: the token is the owner's")
+
+    def test_organization_level_and_app_tokens_count(self):
+        code, log, _ = self.automation_run(gh={"actions": {"actions/organization-variables": ["BOARD_CONFIG", "BOARD_APP_ID"],
+                                                           "actions/organization-secrets": ["BOARD_APP_KEY"]}})
+        self.assertEqual(code, 0, log)
+
+    def test_unreadable_secrets_are_reported_not_fatal(self):
+        code, log, _ = self.automation_run(gh={"actions_forbidden": True})
+        self.assertEqual(code, 2)
+        self.assertIn("couldn't read its Actions secrets", log)
+
+    def test_missing_workflow_and_opting_out(self):
+        code, log, _ = self.automation_run(gh={"absent": {"workflow"}})
+        self.assertIn("copy template/repo/.github/workflows/board.yml", log)
+        org = dict(ORG, repos=[dict(r, automation=False) for r in ORG["repos"]])
+        code, log, _ = self.automation_run(gh={"absent": {"workflow"}}, org=org)
+        self.assertEqual(code, 0, log)
 
     def test_new_repo_layout_includes_the_board_workflow(self):
         self.assertIn(".github/workflows/board.yml", pv.scaffold("acme-co", {"name": "ops"}))
