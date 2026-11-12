@@ -23,9 +23,9 @@
 #   - variable BOARD_REF: the guide commit to take the board command from, as a full commit SHA.
 #     The job runs that command with the board token, so pin it and bump it deliberately.
 #     Unset, the job takes the guide's main and warns.
-# Without a token or BOARD_CONFIG the job warns what's missing and passes. Pull requests from
-# forks and Dependabot get no secrets, so their merges skip too; run `board guard owner/repo#N`
-# by hand for those.
+# Without a token or BOARD_CONFIG the job warns what's missing and passes. GitHub withholds
+# secrets from fork pull requests and from merges Dependabot makes itself, so those skip with a
+# notice; run `board guard owner/repo#N` by hand for those.
 name: board
 
 on:
@@ -64,15 +64,13 @@ jobs:
           PINNED: ${{ vars.BOARD_REF }}
           NO_SECRETS: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]') }}
         run: |
-          if [ "$NO_SECRETS" = true ]; then
-            echo "::notice title=Board automation skipped::GitHub withholds secrets from fork and Dependabot pull requests; run board guard $REPO#$PR_NUMBER by hand if this one closes an issue."
-            echo "go=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           missing=""
           [ -n "$TOKEN" ] || missing="a token (BOARD_APP_ID and BOARD_APP_KEY, or BOARD_TOKEN)"
           [ -n "$CONFIG_JSON" ] || missing="${missing:+$missing and }the BOARD_CONFIG variable"
-          if [ -n "$missing" ]; then
+          if [ -n "$missing" ] && [ "$NO_SECRETS" = true ]; then
+            echo "::notice title=Board automation skipped::GitHub withholds secrets from fork pull requests and from merges by Dependabot; run board guard $REPO#$PR_NUMBER by hand if this one closes an issue."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$missing" ]; then
             echo "::warning title=Board automation skipped::Set $missing in the repo's Actions settings."
             echo "go=false" >> "$GITHUB_OUTPUT"
           else

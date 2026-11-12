@@ -308,6 +308,10 @@ class Guard(unittest.TestCase):
         out, rc = self.run_guard("Done", ["acme-co/ops#41"], later_status="Done", returns=[board.FAILED, board.APPLIED])
         self.assertEqual((out, rc), (["In Review", "In Review"], board.APPLIED))
 
+    def test_a_recheck_that_finds_the_board_right_clears_the_first_passes_failure(self):
+        self.assertEqual(self.run_guard("Done", ["acme-co/ops#41"], returns=[board.FAILED]), (["In Review"], board.APPLIED))
+        self.assertEqual(self.run_guard("In Review", [], returns=[board.FAILED]), (["Done"], board.APPLIED))
+
     def test_recheck_off_at_zero_and_skipped_when_nothing_is_on_a_board(self):
         slept = []
         self.written("Done", ["acme-co/ops#41"], dict(WORK, guard_recheck_seconds=0), later_status="Done", slept=slept)

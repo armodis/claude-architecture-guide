@@ -1450,7 +1450,8 @@ def guard(boards, pr_ref, gh=None, log=print, sleep=time.sleep):
     first read while another closing pull request is still open (back to In Review), and that
     other pull request merging meanwhile while the Status is still In Review (on to Done or
     Pending Release). Any other Status set in the wait, such as a release moving an item to
-    Done, is kept."""
+    Done, is kept; on a tag-release board "Item closed" sets Pending Release, so a Done there
+    comes from a release."""
     gh = gh or GitHub()
     pr = gh.pr(pr_ref)
     if not pr["merged"]:
@@ -1481,8 +1482,10 @@ def guard(boards, pr_ref, gh=None, log=print, sleep=time.sleep):
             else:
                 want = st["pending"] if b.get("release") == "tags" else st["done"]
                 why = "last closing pull request merged"
-            if n and not (want == st["review"] or have == st["review"]):
-                continue  # on recheck, only the two races above
+            if n:
+                results.pop((iss["ref"], b["name"]), None)  # the recheck's reading supersedes pass one's
+                if not (want == st["review"] or have == st["review"]):
+                    continue  # on recheck, only the two races above
             if have == want:
                 if not n:
                     log(f"{iss['ref']} on {b['name']}: {why}; Status already {want}")
