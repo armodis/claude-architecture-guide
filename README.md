@@ -53,7 +53,7 @@ Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https:
 
 ## Setting up the project board (optional)
 
-The board is the shared-state plane for the [multi-agent workflow](#part-3-the-multi-agent-workflow) — where independent Claude sessions claim work and stay coordinated.
+The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent Claude sessions claim work and stay coordinated.
 
 **Fastest path — copy a ready-made template.** Two GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) are published with the fields and lifecycle this guide describes; open one and hit **Copy** to start pre-wired:
 
@@ -64,11 +64,11 @@ The board is the shared-state plane for the [multi-agent workflow](#part-3-the-m
 
 **No org, or building from scratch?** There's deliberately **no bootstrap script** — creating a board via the GraphQL API (field IDs, option IDs, dynamic iteration IDs) is exactly the brittle glue a capable Claude Code session handles better live than a frozen script would. Follow this checklist the agent executes with `gh`, confirming each step:
 
-1. **Create a Projects (v2) board** for the domain, spanning its repos.
+1. **Create a Projects (v2) board** for the domain, spanning its repos, or one per product once a business has several (see [Organization, board, or repo?](#organization-board-or-repo)).
 2. **Add the fields the policy reads:** `Status` (single-select: ToDo · Backlog · In Progress · Pending Release · Done), `Priority` (P0–P3), `Effort` (number or size), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task).
 3. **Define function labels** (e.g. `area:pipeline`) on the repos whose issues the agents pick up, so the queue is filterable.
 4. **Wire sync automation** with [GitHub Actions](https://docs.github.com/en/actions): move an item to `In Progress` when a PR opens, `Done` when it closes/merges. Start minimal; add rules as drift appears.
-5. **Adopt the working rules** from [Part 3](#part-3-the-multi-agent-workflow): read `STATUS.md` first, claim by flipping `Status → In Progress`, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
+5. **Adopt the working rules** from [Part 3](#part-3-multi-agent-workflow-via-github): read `STATUS.md` first, claim by flipping `Status → In Progress`, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
 
 The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Skills that operate on the board (triage, claim, sync) are yours to author — the agent drafts them against this model.
 
@@ -486,9 +486,21 @@ Most work won't be this deep. Use hierarchy when it earns its keep.
 
 When a PR closes an issue, use `closes #N`, `fixes #N`, or `resolves #N` in the body. GitHub populates `closingIssuesReferences` and (if you set up GitHub Actions for it) the Status field auto-transitions on PR merge. Plain `#N` mentions are informational — no automation.
 
-### One board per domain, or one shared board?
+### Organization, board, or repo?
 
-Start with **one shared board** if you're new to this. Easier to maintain, simpler mental model. As one domain accumulates enough volume that the shared board feels cluttered, spin off a domain-specific board.
+Three containers, three questions. Decide them in this order. This section covers work in organizations you own; for whether a repo belongs in your user account, your own organization or someone else's, see [GitHub Home Strategy](#github-home-strategy).
+
+| Container | Use a separate one for | Signal it's time |
+|---|---|---|
+| **Organization** | Each business, or anything that may change hands | A distinct legal entity; a product you may sell or spin off; outside collaborators, investors or customers who need their own access; regulated data (health, financial) that calls for its own access controls and audit |
+| **Project board** | Each product, plus one for company-wide work | Its own roadmap, priorities and Themes. Two products that share nothing would mix unrelated Themes in one dropdown |
+| **Repo** | Each product, as one repo (a monorepo for that product) | Split a piece out only when several products share it, or it ships on its own schedule |
+
+**Boards.** A business with one product can run on one board. Once it has two products, give each product its own board and keep a company board for what spans them, such as operations tooling and strategy. Agents file each issue on the board of the product it belongs to, and company-wide work on the company board. A company-level parent item can parent a product Epic: sub-issue links are between issues, whichever board each sits on. With the "Auto-add sub-issues to project" workflow on, linking a product Epic under a company item pulls the Epic's whole subtree onto the company board too, and unlinking later leaves the pulled items in place. Decide which board holds the detail before you link; to keep it on the product board alone, turn that workflow off on the company board. For personal domains, start with **one shared board** and spin off a domain board when the shared one feels cluttered.
+
+**Repos: monorepo or many repos.** A monorepo keeps all of a product's code in one repository: backend, frontend, docs and tests. A change across parts lands as one pull request, issues and history live in one place, and agents find everything from one checkout. Its costs show at scale: the repo grows large, access is all or nothing, and builds eventually need tooling to test only what changed. Many repos give each part separate ownership, access and release schedules, at the cost of coordinating changes across repos and keeping versions in step. For a small team where agents do much of the work, one repo per product is the default.
+
+**Moving later.** GitHub transfers repos between organizations with their history, issues and pull requests; issue types carry over only where the new organization has a matching type. Project boards can't change owner, and item field values (Status, Priority, Theme, Effort) live on the board: export them, copy the board to the new owner, add the items again and re-enter the values. So if a sale or spin-off is already likely, start the product in its own organization. Otherwise start it inside its business's organization: the repo moves cleanly later, and the board is rebuilt.
 
 ## Templating Project Boards
 
@@ -507,7 +519,7 @@ If you already have a Project board with a schema you like (a work board, for ex
 3. To create a new working board: either use the org's "New project" → Templates dialog, or call `copyProjectV2` with the template's ID as `projectId` and the desired target as `ownerId`
 4. After copy, adjust field options for the new context via `updateProjectV2Field` mutations (see API note)
 
-**API note — editing single-select options.** There is no `updateProjectV2SingleSelectField` mutation (a natural guess that fails with "Field doesn't exist on type Mutation"). The real mutation is **`updateProjectV2Field`** with a `singleSelectOptions` argument — and it *replaces* the full option list, so include existing options you want to keep. Also: the `singleSelectOptions` array can't be passed via `gh api graphql -F` (it stringifies); pass the whole query+variables as a JSON body with `gh api graphql --input <file>`. To *add* fields, use `createProjectV2Field`; to flip the template flag, `markProjectV2AsTemplate`. All work identically on templates (they're regular ProjectV2 objects with a boolean flag).
+**API note — editing single-select options.** There is no `updateProjectV2SingleSelectField` mutation (a natural guess that fails with "Field doesn't exist on type Mutation"). The real mutation is **`updateProjectV2Field`** with a `singleSelectOptions` argument — and it *replaces* the full option list, so include each option you want to keep, with its `id`. An option sent without its `id` is recreated, and items set to it are cleared. Also: the `singleSelectOptions` array can't be passed via `gh api graphql -F` (it stringifies); pass the whole query+variables as a JSON body with `gh api graphql --input <file>`. To *add* fields, use `createProjectV2Field`; to flip the template flag, `markProjectV2AsTemplate`. All work identically on templates (they're regular ProjectV2 objects with a boolean flag).
 
 **Auth note:** GitHub Apps (installation tokens) can't access user-level Projects v2 — a documented GitHub limitation. PATs and OAuth tokens (e.g., the token from `gh auth login`) work fine. For agent-driven flows using `gh api graphql`, this is a non-issue. For flows using a Claude GitHub App installation token, you'll need to either keep the project at the org level or use a different auth path.
 
@@ -516,6 +528,7 @@ The copy inherits fields, views, and field options. Items don't copy — the new
 - Use `updateProjectV2Field` (with `singleSelectOptions`) to change Theme options to the new vocabulary
 - Use the same mutation to simplify Status (drop values you don't need) — remember it replaces the full list
 - Leave Priority, Type, Effort, Start/End as-is
+- Turn on the "Auto-add to project" workflow in the web UI (board menu → Workflows), then set its repository and filter. Copies don't carry it, and the API can read and delete workflows but not create or enable them. Each auto-add workflow covers one repository; the Free plan allows one per board (Pro and Team five, Enterprise twenty), and it adds only new or updated items, so add other repos' issues and existing ones yourself
 
 This pattern saves significant manual configuration and ensures consistency across boards.
 
@@ -690,7 +703,8 @@ sessions may have been here recently or be about to arrive. Conventions:
 - **Commit prefixes:** `analysis:`, `plan:`, `impl:`, `status:`, plus standard
   `feat:`/`fix:`/`docs:`.
 - **GitHub Issues are the task graph.** Open issues = pending work. Each
-  work item gets an issue on the domain's Project board with Type, Priority,
+  work item gets an issue on its Project board (the domain's, or its
+  product's) with Type, Priority,
   Category, Theme set.
 - **Closing keywords (`closes #N`, `fixes #N`, `resolves #N`)** in PR bodies
   trigger automation. Plain `#N` mentions are informational only.
@@ -772,7 +786,7 @@ For each domain repo:
 - Scaffold `docs/{analysis,plans,decisions,runbooks}/` (with `.gitkeep` files to keep empty dirs in git)
 - Create `CLAUDE.md` with the multi-agent boilerplate from Part 3 plus domain-specific content
 - Create `STATUS.md` with current state
-- Create or copy a Project board (use the Copy project pattern from Part 3 if you have an existing board to template from)
+- Create or copy a Project board, one per product once a business has several (use the Copy project pattern from Part 3 if you have an existing board to template from)
 - Connect repos to the board
 
 ### 6. Workflow smoke test
