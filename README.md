@@ -484,7 +484,7 @@ For a hub repo (one whose function generates ongoing build work — a planning/p
 (Explicit non-scope items so they aren't filed accidentally.)
 ```
 
-For a leaf repo (work happens here but no ongoing build queue — a domain repo like `home` or `ifl`): drop the Functions section, keep mission + layout + see-also.
+For a leaf repo (work happens here but no ongoing build queue — a domain repo, such as one for household admin): drop the Functions section, keep mission + layout + see-also.
 
 The function model: ask "what am I building that leverages the substrate?" Not "what work happens here." Outputs (reports, board state, planning artifacts) are downstream consumption — they don't track as functions of the repo.
 
