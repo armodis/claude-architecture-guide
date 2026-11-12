@@ -302,6 +302,20 @@ class ReviewCases(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("couldn't read its Actions secrets", log)
 
+    def test_user_repos_skip_the_organization_lookup(self):
+        class UserGH(FakeGH):
+            def rest(self, path):
+                if "organization-" in path:
+                    raise pv.ProvisionError(f"gh api {path}: HTTP 422 Validation Failed")
+                return super().rest(path)
+        board = {"id": "P_t", "number": 1, "title": "Tasks", "repos": ["jdoe/tasks"], "levels": [], "themes": ["Home"]}
+        gh = UserGH({"jdoe": "User"}, repos={"jdoe/tasks"}, boards={"jdoe": [board]}, labels={"jdoe/tasks:test-fixture"})
+        me = {"login": "jdoe", "type": "user", "repos": [{"name": "tasks"}],
+              "boards": [{"name": "tasks", "title": "Tasks", "repos": ["tasks"], "template": {"owner": "tpl", "number": 7}}]}
+        code, log = run(gh, {"owners": [me]}, True, self.cfgpath)
+        self.assertNotIn("couldn't read", log)
+        self.assertEqual(code, 0, log)
+
     def test_missing_workflow_and_opting_out(self):
         code, log, _ = self.automation_run(gh={"absent": {"workflow"}})
         self.assertIn("copy template/repo/.github/workflows/board.yml", log)

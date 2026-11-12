@@ -10,11 +10,12 @@
 #
 # Needs, in the repo's (or its organization's) Actions settings:
 #   - a token that can write to the board, which the default GITHUB_TOKEN can't. Either:
-#       - variable BOARD_APP_ID and secret BOARD_APP_KEY: a GitHub App with Projects read and
-#         write, installed on the organization; the job mints a short-lived token each run
-#         (the choice for an organization board), or
+#       - variable BOARD_APP_ID and secret BOARD_APP_KEY: a GitHub App installed on the
+#         organization and the repos that feed the board, with organization Projects read and
+#         write and repository Issues, Pull requests and Contents read; the job mints a
+#         short-lived token each run (the choice for an organization board), or
 #       - secret BOARD_TOKEN: a personal access token with the repo and project scopes (the
-#         choice for a user board, which GitHub Apps can't reach).
+#         choice for a user board, which GitHub Apps can't reach). When both are set, the App wins.
 #   - variable BOARD_CONFIG: the JSON of the board config (as in ~/.config/board/boards.json),
 #     with this repo listed in its board's "repos".
 #   - variable BOARD_REF (optional): the guide commit to take the board command from; pin a
@@ -38,6 +39,7 @@ jobs:
     if: github.event_name == 'release' || github.event.pull_request.merged
     runs-on: ubuntu-latest
     env:
+      HAS_APP_KEY: ${{ secrets.BOARD_APP_KEY != '' }}
       BOARD_CONFIG: ${{ github.workspace }}/.board.json
       BOARD_REF: ${{ vars.BOARD_REF || 'main' }}
       REPO: ${{ github.repository }}
@@ -46,7 +48,7 @@ jobs:
     steps:
       - name: Mint a GitHub App token
         id: app
-        if: vars.BOARD_APP_ID != ''
+        if: vars.BOARD_APP_ID != '' && env.HAS_APP_KEY == 'true'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ vars.BOARD_APP_ID }}
