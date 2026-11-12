@@ -5,6 +5,8 @@ description: Set up a GitHub project board for the operating model — create or
 
 # board-setup
 
+For a whole setup (organizations, repos and boards from a config file), run the guide's `provision.py` and use this skill for what it reports and for one-off boards.
+
 **Inputs:** the owner (organization or user), the template to copy if there is one, the repos that feed the board, and the board config at `~/.config/board/boards.json` (copy `boards.example.json` beside it on first use).
 
 ## 1. Create or copy

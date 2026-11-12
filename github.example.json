@@ -1,0 +1,30 @@
+{
+  "owners": [
+    {
+      "login": "your-org",
+      "type": "organization",
+      "repos": [
+        {"name": "ops", "kind": "plain", "description": "Company-wide tooling and planning", "path": "~/work/your-org/ops"},
+        {"name": "your-product", "kind": "product", "description": "One sentence on the product", "path": "~/work/your-org/your-product"}
+      ],
+      "boards": [
+        {"name": "company", "title": "Strategic Portfolio", "repos": ["ops"],
+         "template": {"owner": "armodis-ai", "number": 6},
+         "themes": ["Strategy", "Product", "Engineering", "Operations", "Go to market", "Finance", "Legal and compliance", "People"]},
+        {"name": "your-product", "title": "Your Product", "repos": ["your-product"],
+         "template": {"owner": "armodis-ai", "number": 9}}
+      ]
+    },
+    {
+      "login": "your-user",
+      "type": "user",
+      "repos": [
+        {"name": "tasks", "kind": "plain", "description": "Personal tasks and their notes", "path": "~/personal/tasks"}
+      ],
+      "boards": [
+        {"name": "personal", "title": "Personal Tasks", "repos": ["tasks"],
+         "template": {"owner": "armodis-ai", "number": 7}}
+      ]
+    }
+  ]
+}
