@@ -57,7 +57,7 @@ Read them back afterwards: `gh api graphql` on the project's `workflows { nodes 
 
 ## 5. Repo automation
 
-Copy the guide's `template/repo/.github/workflows/board.yml` into each repo. It reopens an issue another open pull request still closes when one merges (`board guard`) and, on a published release, moves released items to Done (`board release`). Its header lists the secret and variables the repo needs; setting the secret is the user's to do.
+Copy the guide's `template/repo/.github/workflows/board.yml` into each repo. When a pull request merges, it keeps the board Status of the issues it closes right (`board guard`: In Review while another closing pull request is open, Done or Pending Release after the last) and, on a published release, moves released items to Done (`board release`). Its header lists the secret and variables the repo needs; setting the secret is the user's to do.
 
 ## 6. Report
 

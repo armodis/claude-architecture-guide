@@ -1,8 +1,10 @@
 # Board automation for this repo, from the architecture guide.
 #
 #   - When a pull request merges: GitHub closes each issue it names with a closing keyword, even
-#     when another open pull request closes the same issue. `board guard` reopens such an issue,
-#     says why, and sets it back to In Review.
+#     when another open pull request closes the same issue, and the board's "Item closed"
+#     workflow sets Done. `board guard` keeps the board Status right: In Review while another
+#     closing pull request is open, then Done (Pending Release on a tag-release board) once the
+#     last one merges. The issue itself stays closed.
 #   - When a release is published (repos that release by tag): `board release` moves this repo's
 #     Pending Release items whose merged pull requests are in the tag to Done.
 #

@@ -26,7 +26,8 @@ the board whose "repos" list the current directory's repo.
                                                  state, pull requests vs In Review, unlinked pull requests
   board note     <board> <owner/repo#n> <kind> <text> [--by NAME]
   board notes    <board> <owner/repo#n>          append to / read an item's analysis notes (stale ones marked)
-  board guard    <owner/repo#pr>                 after a merge: reopen issues other open pull requests still close
+  board guard    <owner/repo#pr>                 after a merge: Status In Review while another closing pull
+                                                 request is open, Done (or Pending Release) after the last
   board release  <board> <owner/repo> <tag> [--dry-run]
                                                  Pending Release items whose merged pull requests are in the tag -> Done
   board xrefs    <board>                         items whose xref_fields name another business
@@ -558,10 +559,10 @@ def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
         if e["state"] == "CLOSED":
             completed = e.get("state_reason") in (None, "COMPLETED")
             ok = (st_["done"], st_["pending"]) if tags and completed else (st_["done"],)
-            if st not in ok:
+            if st not in ok and not (open_pr and st == st_["review"]):
                 add("status", r, f"closed but Status is {st!r}" + (" (expected Pending Release or Done)" if len(ok) > 1 else ""))
-            if open_pr:
-                add("pull request", r, f"closed while {', '.join(open_pr)} is still open")
+            if open_pr and st != st_["review"]:
+                add("pull request", r, f"closed while {', '.join(open_pr)} is still open, but Status is {st!r}, not {st_['review']!r}")
         if e["state"] == "OPEN" and st == st_["done"]:
             add("status", r, "Status is Done but the issue is open")
         if st == st_["pending"] and not tags:
@@ -1039,7 +1040,6 @@ M_UNRELATE = "mutation($i:ID!,$o:ID!){removeRelatesTo(input:{issueId:$i,relatedI
 M_BLOCK = "mutation($i:ID!,$o:ID!){addBlockedBy(input:{issueId:$i,blockingIssueId:$o}){clientMutationId}}"
 M_UNBLOCK = "mutation($i:ID!,$o:ID!){removeBlockedBy(input:{issueId:$i,blockingIssueId:$o}){clientMutationId}}"
 M_ASSIGN = "mutation($i:ID!,$u:[ID!]!){addAssigneesToAssignable(input:{assignableId:$i,assigneeIds:$u}){clientMutationId}}"
-M_COMMENT = "mutation($i:ID!,$b:String!){addComment(input:{subjectId:$i,body:$b}){clientMutationId}}"
 M_OPTIONS = """mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){
   projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}"""
 Q_ITEM_FIELD = """query($i:ID!,$f:String!){node(id:$i){... on ProjectV2Item{isArchived fieldValueByName(name:$f){
@@ -1411,9 +1411,11 @@ def boards_holding(boards, repo):
 
 
 def guard(boards, pr_ref, gh=None, log=print):
-    """After a pull request merges: GitHub closes each issue it names with a closing keyword, even
-    when other open pull requests close the same issue. Reopen such an issue, say why in a
-    comment, and set it back to In Review on the boards that hold it."""
+    """After a pull request merges, keep the board Status of each issue it closes right. GitHub
+    closes the issue at the first closing pull request that merges, and the board's "Item closed"
+    workflow then sets Done; the issue may stay closed, but its Status follows the pull requests:
+    In Review while another closing pull request is open, and Done (Pending Release on a board
+    whose repos release by tag) once the last one has merged."""
     gh = gh or GitHub()
     pr = gh.pr(pr_ref)
     if not pr["merged"]:
@@ -1422,19 +1424,21 @@ def guard(boards, pr_ref, gh=None, log=print):
     rc = APPLIED
     for iss in pr["closes"]:
         others = [x for x in iss["open_prs"] if x != pr_ref]
-        if not others:
-            log(f"{iss['ref']}: no other open pull request closes it")
-            continue
-        if iss["state"] == "CLOSED":
-            gql(M_REOPEN, i=iss["id"])
-            gql(M_COMMENT, i=iss["id"], b=f"Reopened after {pr_ref} merged: {', '.join(others)} also closes this issue "
-                                         "and is still open. It closes when the last of them merges.")
-            log(f"{iss['ref']}: reopened; still waiting on {', '.join(others)}")
         for b in boards_holding(boards, iss["ref"].split("#")[0]):
-            if iss["ref"] not in by_ref(pull(b)):
+            e = by_ref(pull(b)).get(iss["ref"])
+            if e is None:
                 continue
-            r = apply_plan(b, boards, [{"op": "set_field", "item": iss["ref"], "field": "Status",
-                                        "value": b["statuses"]["review"]}], approved=True, log=log)
+            st = b["statuses"]
+            if others:
+                want = st["review"]
+                log(f"{iss['ref']} on {b['name']}: {', '.join(others)} still open; Status {want}")
+            else:
+                want = st["pending"] if b.get("release") == "tags" else st["done"]
+                log(f"{iss['ref']} on {b['name']}: last closing pull request merged; Status {want}")
+            if e["fields"].get("Status") == want:
+                continue
+            r = apply_plan(b, boards, [{"op": "set_field", "item": iss["ref"], "field": "Status", "value": want,
+                                        "cross_owner": owner_of(iss["ref"]) != b["owner"]}], approved=True, log=log)
             rc = max(rc, r) if r != SIDE_EFFECTS else rc
     return rc
 
