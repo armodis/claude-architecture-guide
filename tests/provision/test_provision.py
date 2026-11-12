@@ -76,7 +76,7 @@ class FakeGH:
             if getattr(self, "actions_forbidden", False):
                 raise pv.ProvisionError(f"gh api {path}: HTTP 403")
             kind = parts[4].split("?")[0]
-            have = getattr(self, "actions", {"actions/secrets": ["BOARD_TOKEN"], "actions/variables": ["BOARD_CONFIG"]})
+            have = getattr(self, "actions", {"actions/secrets": ["BOARD_TOKEN"], "actions/variables": ["BOARD_CONFIG", "BOARD_REF"]})
             key = "secrets" if kind.endswith("secrets") else "variables"
             return {key: [{"name": x} for x in have.get("actions/" + kind, [])]}
         _, owner, name, _, label = parts
@@ -286,16 +286,22 @@ class ReviewCases(unittest.TestCase):
         return code, log, gh
 
     def test_missing_token_or_config_is_a_step_by_hand(self):
-        code, log, gh = self.automation_run(gh={"actions": {"actions/variables": ["BOARD_CONFIG"]}})
+        code, log, gh = self.automation_run(gh={"actions": {"actions/variables": ["BOARD_CONFIG", "BOARD_REF"]}})
         self.assertEqual(code, 2)
         self.assertIn("acme-co/ops: add a token", log)
         self.assertNotIn("variable BOARD_CONFIG (the board", log)
         self.assertEqual([w for w in gh.writes if w[0] != "options"], [], "nothing is set: the token is the owner's")
 
     def test_organization_level_and_app_tokens_count(self):
-        code, log, _ = self.automation_run(gh={"actions": {"actions/organization-variables": ["BOARD_CONFIG", "BOARD_APP_ID"],
+        code, log, _ = self.automation_run(gh={"actions": {"actions/organization-variables": ["BOARD_CONFIG", "BOARD_APP_ID", "BOARD_REF"],
                                                            "actions/organization-secrets": ["BOARD_APP_KEY"]}})
         self.assertEqual(code, 0, log)
+
+    def test_an_unpinned_board_command_is_a_step_by_hand(self):
+        code, log, _ = self.automation_run(gh={"actions": {"actions/secrets": ["BOARD_TOKEN"], "actions/variables": ["BOARD_CONFIG"]}})
+        self.assertEqual(code, 2)
+        self.assertIn("acme-co/ops: set variable BOARD_REF", log)
+        self.assertNotIn("add a token", log)
 
     def test_unreadable_secrets_are_reported_not_fatal(self):
         code, log, _ = self.automation_run(gh={"actions_forbidden": True})

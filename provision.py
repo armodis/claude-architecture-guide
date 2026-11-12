@@ -293,7 +293,8 @@ class Run:
         """The board workflow keeps Status right for issues with several closing pull requests and
         moves released items to Done. It needs a token (a GitHub App's BOARD_APP_ID variable and
         BOARD_APP_KEY secret, or a BOARD_TOKEN secret) and the BOARD_CONFIG variable, at repo or
-        organization level. Adding them is the owner's to do, so they are reported, never set.
+        organization level, and should pin the board command with the BOARD_REF variable. Adding
+        them is the owner's to do, so they are reported, never set.
         A repo marked "automation": false in github.json is skipped."""
         if r.get("automation") is False:
             return
@@ -316,6 +317,9 @@ class Run:
         if missing:
             self.by_hand(f"{name}: add {'; and '.join(missing)} in Settings > Secrets and variables > Actions; "
                          "until then the board workflow skips")
+        if "var:BOARD_REF" not in have:
+            self.by_hand(f"{name}: set variable BOARD_REF to the guide commit SHA to run the board command from; "
+                         "without it the board workflow runs the guide's main and warns")
 
     def actions_names(self, name, org):
         """Secret and variable names visible to a repo's Actions: its own, and for a repo in an

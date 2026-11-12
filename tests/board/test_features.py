@@ -236,20 +236,36 @@ class Release(unittest.TestCase):
 
 
 class Guard(unittest.TestCase):
-    def run_guard(self, issue_status, open_prs, board_cfg=None):
-        plans = []
+    def run_guard(self, issue_status, open_prs, board_cfg=None, later_prs=None, later_status=None, on_board=True,
+                  logs=None):
+        """open_prs on arrival; later_prs / later_status: what the recheck sees (another merge, or the
+        board's own "Item closed" workflow landing after the first read)."""
+        plans, status, calls = [], {"v": issue_status}, {"pr": 0}
 
         class GH:
             def pr(self, ref):
+                calls["pr"] += 1
+                prs = open_prs if calls["pr"] == 1 or later_prs is None else later_prs
                 return dict(id="PR", owner="acme-co", state="MERGED", merged=True, url="u",
-                            closes=[dict(id="I4", ref="acme-co/ops#4", state="CLOSED", open_prs=open_prs)])
+                            closes=[dict(id="I4", ref="acme-co/ops#4", state="CLOSED", open_prs=prs)])
+
+        def sleep(_):
+            if later_status is not None:
+                status["v"] = later_status
         b = board_cfg or WORK
         saved = board.gql, board.pull, board.apply_plan
         board.gql = lambda q, **v: (_ for _ in ()).throw(AssertionError("no direct GitHub writes"))
-        board.pull = lambda bb, write=True: tree_snap(item("acme-co/ops#4", status=issue_status, state="CLOSED"))
-        board.apply_plan = lambda bb, boards, plan, **kw: plans.append(plan) or board.APPLIED
+        board.pull = lambda bb, write=True: tree_snap(*([item("acme-co/ops#4", status=status["v"], state="CLOSED")]
+                                                        if on_board else []))
+
+        def apply(bb, boards, plan, **kw):
+            plans.append(plan)
+            status["v"] = plan[0]["value"]
+            return board.APPLIED
+        board.apply_plan = apply
         try:
-            board.guard({"company": b}, "acme-co/ops#40", gh=GH(), log=lambda *_: None)
+            board.guard({"company": b}, "acme-co/ops#40", gh=GH(), sleep=sleep,
+                        log=(logs.append if logs is not None else lambda *_: None))
         finally:
             board.gql, board.pull, board.apply_plan = saved
         return [op["value"] for p in plans for op in p]
@@ -263,6 +279,17 @@ class Guard(unittest.TestCase):
 
     def test_nothing_to_do_when_status_is_already_right(self):
         self.assertEqual(self.run_guard("Done", []), [])
+
+    def test_recheck_restores_in_review_when_item_closed_lands_after_the_first_read(self):
+        self.assertEqual(self.run_guard("In Review", ["acme-co/ops#41"], later_status="Done"), ["In Review"])
+
+    def test_recheck_sets_done_when_the_other_pr_merged_meanwhile(self):
+        self.assertEqual(self.run_guard("Done", ["acme-co/ops#41"], later_prs=[]), ["In Review", "Done"])
+
+    def test_an_issue_on_no_board_is_reported(self):
+        logs = []
+        self.assertEqual(self.run_guard("Done", [], on_board=False, logs=logs), [])
+        self.assertTrue(any("not on company" in m for m in logs), logs)
 
 
 class StateFolder(unittest.TestCase):
