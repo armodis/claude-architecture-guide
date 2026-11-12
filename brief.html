@@ -404,8 +404,8 @@
       <h3>What every agent must do</h3>
       <div class="reqs">
         <div class="req"><div class="req__k">STATUS.md</div><div class="req__v">Read it <b>first</b> on entering a repo; <span class="em">update it before leaving.</span></div></div>
-        <div class="req"><div class="req__k">Claim first</div><div class="req__v">Flip board Status <code>ToDo → In Progress</code> (the queryable lock), log it in STATUS.md with session + date, commit to <code>main</code> with a <code>status:</code> prefix.</div></div>
-        <div class="req"><div class="req__k">Select work</div><div class="req__v">Open labeled <code>ToDo</code>, sorted <code>Priority ASC, Effort ASC, Created ASC</code>, head first. Skip (warn) any missing Priority/Effort. <span class="em">Modes: quick-wins · focused-feature · backlog-cleanup.</span></div></div>
+        <div class="req"><div class="req__k">Claim first</div><div class="req__v">Flip board Status <code>Todo → In Progress</code> (the queryable lock), log it in STATUS.md with session + date, commit to <code>main</code> with a <code>status:</code> prefix.</div></div>
+        <div class="req"><div class="req__k">Select work</div><div class="req__v">Open labeled <code>Todo</code>, sorted <code>Priority ASC, Effort ASC, Created ASC</code>, head first. Skip (warn) any missing Priority/Effort. <span class="em">Modes: quick-wins · focused-feature · backlog-cleanup.</span></div></div>
         <div class="req"><div class="req__k">Worktrees</div><div class="req__v">Impl runs in a <a href="https://git-scm.com/docs/git-worktree"><code>git worktree</code></a> on a feature branch. <code>status:</code> → <code>main</code> directly; <code>impl:</code> → the branch, landing via PR. Re-base every path onto the worktree root.</div></div>
         <div class="req"><div class="req__k">Commits</div><div class="req__v"><div class="prefixes"><span class="pfx">analysis:</span><span class="pfx">plan:</span><span class="pfx">impl:</span><span class="pfx">status:</span><span class="pfx alt">feat:</span><span class="pfx alt">fix:</span><span class="pfx alt">docs:</span><span class="pfx alt">chore:</span></div></div></div>
         <div class="req"><div class="req__k">Decisions</div><div class="req__v">For a <b>reversible</b> call that would block on a human, run a Green Doc (direction) → Blue Doc (execution) review and proceed, recording the outcome.</div></div>
@@ -491,7 +491,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
 
       <h3>Status lifecycle</h3>
       <div class="stepper">
-        <span class="step">ToDo</span><span class="arw">→</span>
+        <span class="step">Todo</span><span class="arw">→</span>
         <span class="step">Backlog</span><span class="arw">→</span>
         <span class="step lock">In Progress</span><span class="arw">→</span>
         <span class="step">Pending Release</span><span class="arw">→</span>
