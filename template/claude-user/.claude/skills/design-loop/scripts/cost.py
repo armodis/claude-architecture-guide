@@ -108,6 +108,7 @@ def report(run):
     # Each step runs until the next mark of any kind. A step marked after `closed` reopens the
     # run, so the run ends at the last mark only when that mark is `closed`.
     marks = sorted(log, key=lambda r: r[0])
+    closed = marks[-1][0] if marks[-1][1] == CLOSED else None
     windows = [(ts, marks[i + 1][0] if i + 1 < len(marks) else now(), step)
                for i, (ts, step, _) in enumerate(marks) if step != CLOSED]
 
