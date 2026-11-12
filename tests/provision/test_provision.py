@@ -70,6 +70,9 @@ class FakeGH:
         if len(parts) == 3:  # repos/<owner>/<name>; GitHub answers 404 for a missing repo
             full = f"{parts[1]}/{parts[2]}"
             return {"node_id": f"R_{full}", "size": 1, "pushed_at": "2026-01-01"} if full in self.repos else None
+        if parts[3] in ("contents", "actions"):  # the board workflow, its secret and variable
+            what = "/".join(parts[3:])
+            return None if what in getattr(self, "absent", set()) else {}
         _, owner, name, _, label = parts
         return {} if f"{owner}/{name}:{label}" in self.labels else None
 
@@ -265,6 +268,20 @@ class ReviewCases(unittest.TestCase):
         with self.assertRaisesRegex(pv.ProvisionError, "workflow scope"):
             run(gh, {"owners": [org]}, False, self.cfgpath)
         self.assertEqual(gh.writes, [])
+
+    def test_missing_board_automation_is_a_step_by_hand(self):
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        gh.absent = {"actions/secrets/BOARD_TOKEN"}
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertEqual(code, 2)
+        self.assertIn("acme-co/ops: add secret BOARD_TOKEN", log)
+        self.assertNotIn("BOARD_CONFIG", log)
+        gh.absent = {"contents/.github/workflows/board.yml"}
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertIn("copy template/repo/.github/workflows/board.yml", log)
+        self.assertEqual([w for w in gh.writes if w[0] != "options"], [], "nothing is set: the token is the owner's")
 
     def test_new_repo_layout_includes_the_board_workflow(self):
         self.assertIn(".github/workflows/board.yml", pv.scaffold("acme-co", {"name": "ops"}))

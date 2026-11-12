@@ -282,7 +282,26 @@ class Run:
             if self.live:
                 self.gh.run(["label", "create", label, "--repo", name, "--color", FIXTURE_LABEL[1],
                              "--description", FIXTURE_LABEL[2]])
+        if found:
+            self.automation(name)
         return rid
+
+    def automation(self, name):
+        """The board workflow keeps Status right for issues with several closing pull requests and
+        moves released items to Done. It needs a token and the board config, set in the repo's
+        settings; adding the token is the owner's to do, so it is reported, never set."""
+        if self.gh.rest(f"repos/{name}/contents/.github/workflows/board.yml") is None:
+            self.by_hand(f"{name}: copy template/repo/.github/workflows/board.yml into the repo (needed for issues "
+                         "with several closing pull requests, and for tag releases)")
+            return
+        missing = []
+        if self.gh.rest(f"repos/{name}/actions/secrets/BOARD_TOKEN") is None:
+            missing.append("secret BOARD_TOKEN (a GitHub App token, or a personal access token with repo and project)")
+        if self.gh.rest(f"repos/{name}/actions/variables/BOARD_CONFIG") is None:
+            missing.append("variable BOARD_CONFIG (the board config JSON)")
+        if missing:
+            self.by_hand(f"{name}: add {' and '.join(missing)} in Settings > Secrets and variables > Actions; "
+                         "until then the board workflow skips")
 
     def board(self, owner, typ, owner_id, boards, b, repo_ids, release=None):
         p = boards.get(b["title"])

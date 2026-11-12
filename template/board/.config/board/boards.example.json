@@ -86,7 +86,10 @@
       "outside_hierarchy": [],
       "fixture_rest": {
         "Status": "Backlog"
-      }
+      },
+      "parent_optional": [
+        "Task"
+      ]
     }
   }
 }
