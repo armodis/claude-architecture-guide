@@ -25,5 +25,18 @@
         "instructionFiles": "claude-md-and-agents-md"
       }
     }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/design-framing.sh"
+          }
+        ]
+      }
+    ]
   }
 }

@@ -14,7 +14,7 @@ The fastest way to adopt this is to let a Claude Code session drive. Open Claude
 
 > Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
-The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. It authors the handful of skills your workflow needs with you — the template ships none by design.
+The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, starting with the [design loop](#the-design-loop); the agent authors the skills specific to your work with you.
 
 **Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and `gh` authenticated (only for the board workflow).
 
@@ -44,7 +44,7 @@ What ships alongside this guide:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
 - **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots).
-- **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/`, example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
+- **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
 
 Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https://code.claude.com/docs/en/overview). The rest of this document explains *why* the pieces are shaped the way they are — read on for the mental model, then tailor the template to your own domains.
@@ -55,9 +55,10 @@ Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https:
 
 The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent Claude sessions claim work and stay coordinated.
 
-**Fastest path — copy a ready-made template.** Two GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) are published with the fields and lifecycle this guide describes; open one and hit **Copy** to start pre-wired:
+**Fastest path — copy a ready-made template.** Three GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) are published with the fields and lifecycle this guide describes; open one and hit **Copy** to start pre-wired:
 
 - **[[TEMPLATE] Strategic Portfolio](https://github.com/orgs/armodis-ai/projects/6)** — the portfolio/work board.
+- **[[TEMPLATE] Product Roadmap](https://github.com/orgs/armodis-ai/projects/9)** — one product's board: Milestone, Epic and User Story levels, with the product's own Themes.
 - **[[TEMPLATE] Personal Task Mgmt](https://github.com/orgs/armodis-ai/projects/7)** — the personal-domain analog.
 
 (Projects templates are an org-only GitHub feature, so the copy source has to live in an org — these do.)
@@ -65,10 +66,10 @@ The board is the shared-state plane for the [multi-agent workflow](#part-3-multi
 **No org, or building from scratch?** There's deliberately **no bootstrap script** — creating a board via the GraphQL API (field IDs, option IDs, dynamic iteration IDs) is exactly the brittle glue a capable Claude Code session handles better live than a frozen script would. Follow this checklist the agent executes with `gh`, confirming each step:
 
 1. **Create a Projects (v2) board** for the domain, spanning its repos, or one per product once a business has several (see [Organization, board, or repo?](#organization-board-or-repo)).
-2. **Add the fields the policy reads:** `Status` (single-select: ToDo · Backlog · In Progress · Pending Release · Done), `Priority` (P0–P3), `Effort` (number or size), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task).
+2. **Add the fields the policy reads:** `Status` (single-select: Todo · Backlog · In Progress · In Review · Done, plus Pending Release where repos release by tag), `Priority` (P0–P3), `Effort` (1, 2, 3, 5, 8: the amount of work), `Complexity` (Trivial · Low · Medium · Medium-High · High: how hard it is), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task). See [Recommended custom field schema](#recommended-custom-field-schema).
 3. **Define function labels** (e.g. `area:pipeline`) on the repos whose issues the agents pick up, so the queue is filterable.
-4. **Wire sync automation** with [GitHub Actions](https://docs.github.com/en/actions): move an item to `In Progress` when a PR opens, `Done` when it closes/merges. Start minimal; add rules as drift appears.
-5. **Adopt the working rules** from [Part 3](#part-3-multi-agent-workflow-via-github): read `STATUS.md` first, claim by flipping `Status → In Progress`, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
+4. **Turn on the built-in workflows** (board menu → Workflows; the API can't enable them): Item closed → Done, Item reopened → In Progress, Pull request linked to issue → In Review, Pull request merged → Done, Auto-close issue, Item added to project (issues only) → Backlog, Auto-add sub-issues to project, and Auto-add to project (one per repo on paid plans; the Free plan allows one per board, so add other repos' issues yourself). "Item added to project" can overwrite a Status set at filing, so read Status back after adding an issue that should be Todo. Boards whose repos release by tag also need a release automation: see [Statuses, readiness and required fields](#statuses-readiness-and-required-fields).
+5. **Adopt the working rules** from [Part 3](#part-3-multi-agent-workflow-via-github): read `STATUS.md` first, claim by flipping `Status → In Progress` and assigning yourself, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
 
 The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Skills that operate on the board (triage, claim, sync) are yours to author — the agent drafts them against this model.
 
@@ -101,7 +102,7 @@ Claude has several distinct surfaces that share a brand but differ in mechanics.
 Two facts do most of the work in this guide:
 
 1. **Local Claude Code resolves config from the directory tree** — but the three resolution mechanisms behave differently (see Config Resolution below). CLAUDE.md merges up the whole tree; slash commands stop at the first repo boundary; memory is keyed to the exact launch directory. The practical upshot: **launch from inside the repo you're working on.**
-2. **Web Claude Code only sees the single repo you clone.** Anything you want available in a web session has to be in that repo's `.claude/` (or a submodule). Because the canonical layout puts skills at the repo root's `.claude/`, web sessions get them for free.
+2. **Web Claude Code only sees the single repo you clone.** Anything you want available in a web session has to be in that repo's `.claude/`. Team skills committed there come along; user-level operating skills in `~/.claude/skills/` don't, so a repo that needs them in the cloud carries a copy (see [Stow Operations](#stow-operations)).
 
 ## Config Resolution
 
@@ -110,10 +111,11 @@ Three mechanisms resolve config, and they do **not** all walk the tree the same 
 | Mechanism | What it loads | Walk behavior |
 |-----------|---------------|---------------|
 | **Instruction files** (`CLAUDE.md`, `AGENTS.md`) | Every `CLAUDE.md` from cwd up to `~`, plus `~/.claude/CLAUDE.md`; with the setting below, every `AGENTS.md` on the same walk | **Merges all.** Walks up through every ancestor; closer wins on conflicts. |
-| **Slash commands** (`.claude/commands/`) | Commands from a `.claude/` reachable from cwd | **Stops at the first project boundary.** A directory containing `CLAUDE.md` or `.git` is treated as a project root; the walk does not cross above it. |
+| **User-level skills** (`~/.claude/skills/`, `~/.claude/agents/`) | Every skill and subagent installed for the user | **No walk.** Loaded in every local session, whatever folder it started in. |
+| **Slash commands** (`.claude/commands/`, `.claude/skills/`) | Commands and skills from a `.claude/` reachable from cwd | **Stops at the first project boundary.** A directory containing `CLAUDE.md` or `.git` is treated as a project root; the walk does not cross above it. |
 | **Auto-memory** (`~/.claude/projects/<encoded-cwd>/memory/`) | One directory, keyed by the exact launch cwd | **No walk.** Each cwd has its own memory bucket; subdirectories don't inherit a parent's memory. |
 
-The load-bearing consequence: **a repo is a project boundary** (it has both `CLAUDE.md` and `.git`). Slash commands defined *above* a repo — e.g., in `~/work/.claude/commands/` — will **not** be found when you launch `claude` from inside `~/work/some-repo/`. So skills must live where they'll be found: at the repo root's `.claude/commands/`. This is standard Claude Code project layout, and it has a bonus — web Claude Code (which clones a single repo) picks them up too.
+The load-bearing consequence: **a repo is a project boundary** (it has both `CLAUDE.md` and `.git`). Skills defined *above* a repo — e.g., in `~/work/.claude/` — will **not** be found when you launch `claude` from inside `~/work/some-repo/`. So skills go in one of two places: **user level** (`~/.claude/skills/`) for operating skills that work in every repo, such as the design loop and the board skills, and **the repo root's `.claude/`** for a team's own skills, which web Claude Code (cloning a single repo) also picks up.
 
 CLAUDE.md, by contrast, composes exactly as you'd hope. A session in `~/work/some-repo/` loads, merged:
 
@@ -151,7 +153,7 @@ The system can't enforce that. But it can make the right thing easy: per-domain 
 
 ## The Three-Layer Pattern
 
-Universal → Domain → Repo. Each layer adds specificity — but remember from Config Resolution that the layers compose cleanly for **instruction files** (with the `claude-md-and-agents-md` setting) while **skills resolve from the repo root only**.
+Universal → Domain → Repo. Each layer adds specificity — but remember from Config Resolution that the layers compose cleanly for **instruction files** (with the `claude-md-and-agents-md` setting) while **skills resolve from user level and the repo root only**.
 
 **Universal layer (`~/.claude/`)** — applies everywhere. Things true regardless of context:
 
@@ -164,14 +166,14 @@ Universal → Domain → Repo. Each layer adds specificity — but remember from
 - Domain-specific conventions, tone, and vocabulary (e.g., a different register for personal vs work)
 - A map of the domain's repos
 
-(Domain-level **skills** don't resolve via the walk — the repo boundary blocks them. If you want a skill available across a domain, put it in the domain's "hub" repo and launch from there, or aggregate skills into a domain-root `.claude/` and launch from the domain root as a deliberate convenience — see below.)
+(Domain-level **skills** don't resolve via the walk — the repo boundary blocks them. A skill every repo needs goes at user level; a skill one domain's repos share goes in that domain's hub repo, or in a domain-root `.claude/` aggregation used from the domain root as a deliberate convenience — see below.)
 
 **Repo layer (`<repo>/.claude/` + `<repo>/AGENTS.md`)** — applies to one repo, and is where skills actually live:
 
-- Skills (`.claude/commands/`) and subagents (`.claude/agents/`) — committed in the repo, standard Claude Code layout, found when you launch from inside the repo
+- Team skills (`.claude/skills/` or `.claude/commands/`) and subagents (`.claude/agents/`) — committed in the repo, standard Claude Code layout, found when you launch from inside the repo
 - Repo context in `AGENTS.md` — the cross-vendor file; a `CLAUDE.md` still works for Claude alone, but `AGENTS.md` is what Codex and the others read too
 
-The rule of thumb for instruction files: **put a setting at the highest layer where it's still true.** For skills, there's effectively one place: the repo whose work they operate on. Skills that span repos live in the repo you launch from to do that cross-repo work (a planning/hub repo), referencing siblings by relative path (`../other-repo/...`).
+The rule of thumb for instruction files: **put a setting at the highest layer where it's still true.** Skills follow the same rule with two places to choose from: user level for skills that are the same in every repo, and the repo for skills about that repo's work. Skills that span a team's repos live in the repo you launch from to do that cross-repo work (a planning/hub repo), referencing siblings by relative path (`../other-repo/...`).
 
 ### Optional: a domain-root skill aggregation
 
@@ -192,25 +194,25 @@ A typical layout for two domains:
 ├── .gitconfig                                ← universal git
 ├── .gitconfig-<work>                         ← work-scoped git overrides
 │
-├── work/                                     ← your day job's parent dir
+├── work/                                     ← your businesses, or your day job
 │   ├── CLAUDE.md                            ← work domain layer (root file, not .claude/)
 │   ├── .claude/                             ← OPTIONAL: aggregated skills for domain-root launches
-│   ├── <hub-repo>/                          ← e.g. a planning repo; carries shared skills at its .claude/
-│   │   ├── .claude/commands/               ← skills (found when you launch from here)
-│   │   └── CLAUDE.md
-│   ├── <repo>/                              ← other work repos
-│   └── ...
+│   ├── <org>/                               ← one folder per GitHub organization
+│   │   ├── AGENTS.md                        ← that organization's rules, read beneath the domain layer
+│   │   ├── <product>/                       ← one repo per product, a monorepo (see File Conventions)
+│   │   └── ops/                             ← company-wide tooling and planning
+│   └── <other-org>/
 │
 └── personal/                                 ← everything else
     ├── CLAUDE.md                            ← personal domain layer (root file, not .claude/)
     ├── dotfiles/                            ← your dotfiles repo (stow source for ~/ + domain CLAUDE.md backups)
-    ├── <hub-repo>/                          ← personal analog of the work hub repo (skills at its .claude/)
+    ├── <hub-repo>/                          ← a personal planning repo, if you keep one (its own skills at its .claude/)
     ├── <domain1>/                           ← personal subdomain repos
     ├── <domain2>/
     └── ...
 ```
 
-Adapt names to your preferences. The load-bearing shape: universal config at `~/`, a root `CLAUDE.md` at each domain dir, an `AGENTS.md` at each repo root, and **skills committed at each repo's own `.claude/`** (launch from inside the repo). The domain `.claude/` aggregation is an optional convenience for cross-repo launches.
+Adapt names to your preferences. The load-bearing shape: universal config at `~/`, a root `CLAUDE.md` at each domain dir, an `AGENTS.md` at each repo root, **operating skills at user level** (`~/.claude/skills/`, stowed, so every session sees them), and **team skills committed at each repo's own `.claude/`**. The domain `.claude/` aggregation is an optional convenience for cross-repo launches.
 
 ## GitHub Home Strategy
 
@@ -293,7 +295,8 @@ After `setup.sh` runs, `~/.bashrc` is a symlink pointing into the dotfiles repo.
 
 - **Stow** the universal layer (`~/.claude/`, `~/.bashrc`, etc.) — identical on every machine.
 - **Stow** domain-root `CLAUDE.md` files and (optionally) auto-memory — their natural home (`~/work/CLAUDE.md`, `~/.claude/projects/.../memory/`) isn't itself a git repo, so dotfiles is how you version them.
-- **Don't stow skills.** Skills live at the repo root's `.claude/` and are versioned in that repo — team-shared skills in the team repo, where teammates get them on clone with no stow setup at all. Wrapping a team `.claude/` in a stow package (e.g., `stow/claude-project/.claude/`) is an antipattern: it puts the skills at a non-standard path that the slash-command walk can't find from inside the repo, breaking the canonical launch-from-repo flow. Put skills where Claude Code expects them — `<repo>/.claude/` — and commit them in the repo.
+- **Stow operating skills at user level; commit team skills in their repo.** Skills that run the operating model (the design loop, board operations) are generic, so they're stowed into `~/.claude/skills/`, which every session loads whatever folder it started in. Skills for one team or repo live in that repo's `.claude/` and are committed there, where teammates get them on clone. Keep skills out of domain-level `.claude/` folders and out of stow wrappers around a repo's `.claude/`: a session started inside a repo doesn't see the domain level, so skills there silently go missing.
+- **Cloud sessions** (claude.ai/code) see only the cloned repo, not `~/.claude/`. A repo that needs an operating skill there carries a copy: copy (or vendor as a git submodule and symlink) the skill's folder into `.claude/skills/<name>/` and its agents into `.claude/agents/`, and commit them. The design loop's compaction hook and its token-cost report read local session transcripts, so they work only in local sessions.
 
 > **Hard-won lesson:** an early version of this architecture stowed a team `.claude/` from a `stow/claude-project/` wrapper into a domain-level `.claude/`. It broke per-repo launches (slash commands stopped resolving) because the repo boundary blocks the upward walk. The fix was to move skills to each repo's own root `.claude/` (standard layout) and treat any domain-level aggregation as a personal convenience built with per-file symlinks, not a stow package wrapper.
 
@@ -330,7 +333,7 @@ Four roles, four surfaces, one substrate per domain:
 
 | Role | Best for thinking/design | Best for execution | Outputs |
 |------|--------------------------|--------------------|---------|
-| **Planner** | claude.ai chat or Project | (outputs are documents) | Markdown files in `docs/analysis/` or `docs/plans/` |
+| **Planner** | claude.ai chat or Project | (outputs are documents) | Markdown files in a design run's folder, `design/<YYYY-MM-DD-slug>/` |
 | **Coordinator** | claude.ai chat or Project | Local Claude Code (`gh` + GraphQL — chat can't write to GitHub today) | GitHub Issues + Project board state |
 | **Implementer** | Local Claude Code | Local Claude Code | Commits, PRs, file changes |
 | **Autonomous Worker** | Web Claude Code | Web Claude Code | Branches, PRs, status updates on cloud-hosted sessions |
@@ -345,22 +348,47 @@ Every repo (across every domain) follows the same layout for non-code artifacts:
 
 ```
 <repo>/
-├── README.md            # Orientation: what this repo is, layout, doc pointers (humans first)
-├── AGENTS.md            # Agent behavior conventions for this repo (cross-vendor name)
-├── STATUS.md            # Handoff: what just happened + what's next + where to find things
-├── docs/
-│   ├── analysis/        # Planner outputs: <YYYY-MM-DD-topic>.md; dated records, never edited after the fact
-│   │   └── archive/     # Superseded records (an earlier version of a gate doc, a plan a ruling replaced)
-│   ├── plans/           # Coordinator outputs: <topic>.md (living docs, no date prefix)
-│   │   └── archive/     # Superseded plans
-│   ├── decisions/       # ADRs: <NNNN-title>.md
-│   └── runbooks/        # Operational procedures
+├── README.md                # Orientation: what this repo is, layout, doc pointers (humans first)
+├── AGENTS.md                # Agent behavior conventions for this repo (cross-vendor name)
+├── STATUS.md                # Handoff: what just happened + what's next + where to find things
+├── design/
+│   └── <YYYY-MM-DD-slug>/   # One folder per design-loop run
+│       ├── framing.md       # Goal, requirements, done when, out of scope, assumptions
+│       ├── facts.md         # Questions settled by checks, each with its evidence
+│       ├── decisions.md     # Judgment calls: options, recommendation, the operator's ruling
+│       ├── contract.md      # What gets built, and the acceptance tests
+│       ├── cost.md          # Tokens the run spent (cost-log.tsv holds the step marks)
+│       ├── evidence/        # Logs, probe output and reviews that the records cite
+│       └── scratch/         # Working files, gitignored (design/*/scratch/)
+├── docs/                    # Durable docs for readers: how-to, reference, explanation
+│   ├── decisions/           # ADRs: <NNNN-title>.md, append-only
+│   └── runbooks/            # Operational procedures, when the repo has any
 └── (code / data / whatever)
 ```
 
-**Superseded records move, they don't stay.** A record that a later version replaces (Direction v1 once v2 is ruled, a plan a ruling overturned) moves to the sibling `archive/` directory in the same commit that lands its replacement, and its first lines point forward to what replaced it. A status line reading "SUPERSEDED" is not enough: a fresh session reading the directory cannot tell which file is current and will read both (observed 2026-10-09: a cold-start test session read a superseded Direction beside its replacement and carried one stale clause into an otherwise correct answer). The current version keeps the plain name; nothing else in the repo should link into `archive/` except the replacement's own "written from" line.
+A design run's folder is its whole record: the [design loop](#the-design-loop) writes it, and a later session reads it to see what was decided and why. Work small enough to skip the loop needs no folder.
 
-**Scratch is not a record.** Anything a session writes while working (probe raw output, agent briefs, intermediate JSON) goes under a gitignored scratch root (`<repo>/reports/tmp/<run-name>/` or the harness's scratchpad), never under `docs/`. Findings worth keeping are promoted into `docs/analysis/` as dated records by their author, on the operator's go; everything else is regenerable and stays unversioned.
+**A product repo is a monorepo.** One repo holds every part of one product, so a change across parts lands as one pull request:
+
+```
+<product>/
+├── README.md, AGENTS.md, STATUS.md
+├── design/                  # design-loop runs, as above
+├── docs/                    # reader docs and ADRs, as above
+├── backend/                 # server, API and data model, with its tests
+├── frontend/                # web app, with its tests
+├── scripts/                 # developer and operations scripts
+├── docker-compose.yml       # the local stack, when there is one
+└── .env.example             # the settings the app reads; the real .env stays out of git
+```
+
+Tests sit beside the code they test. Split a part into its own repo only when several products share it or it ships on its own schedule ([Organization, board, or repo?](#organization-board-or-repo)).
+
+**Superseded records move, they don't stay.** A record that a later version replaces (a reader doc rewritten, an ADR's draft once the final lands) moves to a sibling `archive/` directory in the same commit that lands its replacement, and its first lines point forward to what replaced it. A status line reading "SUPERSEDED" is not enough: a fresh session reading the directory cannot tell which file is current and will read both (observed 2026-10-09: a cold-start test session read a superseded Direction beside its replacement and carried one stale clause into an otherwise correct answer). The current version keeps the plain name; nothing else in the repo should link into `archive/` except the replacement's own "written from" line.
+
+A decision ledger is the exception: a later ruling is added under the earlier one as a dated revisit, so the ledger keeps the history and still reads as current.
+
+**Scratch is not a record.** Anything a session writes while working (probe raw output, agent briefs, intermediate JSON) goes under a gitignored scratch root (`design/<run>/scratch/` inside a design run, `.scratch/<run-name>/` otherwise, or the harness's scratchpad), never under `docs/`. Findings worth keeping are promoted into the run's `facts.md` or `evidence/` by their author; everything else is regenerable and stays unversioned.
 
 ### Three-role doc separation
 
@@ -446,21 +474,44 @@ The function model: ask "what am I building that leverages the substrate?" Not "
 
 ## GitHub Projects as Task Substrate
 
-A GitHub Project (v2) with custom fields turns the issue tracker into a planning system. Status + Priority + Type + Category + Theme + Effort + dates give you enough dimensionality to plan real work: who's doing what, when, in what category, at what priority. The board's views (Kanban for daily, Table for bulk edits, Roadmap for timeline) are different slices of the same data.
+A GitHub Project (v2) with custom fields turns the issue tracker into a planning system. Status + Priority + Type + Category + Theme + Effort + Complexity + dates give you enough dimensionality to plan real work: who's doing what, when, in what category, at what priority. The board's views (Kanban for daily, Table for bulk edits, Roadmap for timeline) are different slices of the same data.
 
 ### Recommended custom field schema
 
 | Field | Type | Suggested values | Purpose |
 |-------|------|------------------|---------|
-| **Status** | Single-select | ToDo, In Progress, Done (plus Backlog and Pending Release for projects with release cadence) | Workflow state |
+| **Status** | Single-select | Todo, Backlog, In Progress, In Review, Done (plus Pending Release where repos release by tag) | Workflow state and readiness |
 | **Priority** | Single-select | P0, P1, P2, P3 | Urgency. P0 = today, P3 = backlog |
 | **Type** | GitHub built-in issue type | Bug, Feature, Task | What kind of work |
 | **Category** | Single-select | Epic, User Story | Planning hierarchy level (parent items only — leaves use Type=Task and leave Category empty) |
 | **Theme** | Single-select | (Your taxonomy — see below) | Horizontal categorization |
-| **Effort** | Number | 1, 2, 3, 5, 8 | Optional estimation |
+| **Effort** | Number | 1, 2, 3, 5, 8 | Amount of work; orders the queue |
+| **Complexity** | Single-select | Trivial, Low, Medium, Medium-High, High | How hard the work is; guides which model takes it (harder work to the more capable model) |
 | **Start / End** | Date | YYYY-MM-DD | Optional scheduling |
 
 **Theme** is the horizontal cut across your hierarchical structure. For work, it's typically product areas (Auth, Billing, Search, etc.). For personal, life domains (Family, Household, Legal, Health, Finance, etc.).
+
+### Statuses, readiness and required fields
+
+Status carries readiness, so a Kanban view works unchanged:
+
+- **Backlog:** not ready. An open decision, missing detail, or not yet prioritised. Agents never execute Backlog items; they may refine one up to its open decision.
+- **Todo:** ready. Required fields are set, what done looks like is stated, and no decision is open.
+- **In Progress:** claimed. The claim assigns the issue to the login the claimant works under.
+- **In Review:** a pull request that closes the issue is open.
+- **Pending Release:** merged on a board whose repos release by tag, waiting for the release.
+- **Done:** finished, or closed as not planned or duplicate.
+
+Work only a person can do is assigned to that person while it's still in Todo or Backlog; blocked work is marked with GitHub's "blocked by" relationship. Agents pick up Todo items that are unassigned and not blocked, and assign them at the claim.
+
+**Required fields.** An agent files every issue with every field it can fill:
+
+- **Every issue:** Status, Priority, Theme, Complexity, and Type (Task, Bug or Feature; parents are Feature).
+- **By level:** Effort on Tasks and Stories; Category on parents; a parent link below the top level.
+- **By status:** an assignee from In Progress on; what done looks like before Todo.
+- **Optional:** dates, and a Team field if you add one.
+
+**Done and releases.** In a repo with no release process, a merged closing pull request means Done. On a board whose repos all release by tag, the issue still closes on merge, but that board's "Item closed" workflow sets Pending Release instead of Done; a release workflow moves released items to Done, and whoever closes an issue as not planned or duplicate sets it to Done. GitHub closes an issue when the *first* pull request that says `closes #N` merges, so when several pull requests deliver one issue, only the last one says `closes #N` and the earlier ones say `refs #N`. The release workflow isn't shipped yet ([#11](https://github.com/armodis/claude-architecture-guide/issues/11)); it needs a token that can write to Projects — a GitHub App installation token for an organization board, or a personal access token with the `project` scope for a user board — because the default `GITHUB_TOKEN` can't.
 
 ### Hierarchy via Category + sub-issues
 
@@ -484,7 +535,7 @@ Most work won't be this deep. Use hierarchy when it earns its keep.
 
 ### Closing keywords for automation
 
-When a PR closes an issue, use `closes #N`, `fixes #N`, or `resolves #N` in the body. GitHub populates `closingIssuesReferences` and (if you set up GitHub Actions for it) the Status field auto-transitions on PR merge. Plain `#N` mentions are informational — no automation.
+When a PR closes an issue, use `closes #N`, `fixes #N`, or `resolves #N` in the body. GitHub populates `closingIssuesReferences` and, with the board's built-in workflows on, the Status field moves on PR merge. Plain `#N` mentions are informational — no automation.
 
 ### Organization, board, or repo?
 
@@ -538,7 +589,7 @@ Multiple agents reading the same backlog (parallel local sessions, autonomous wo
 
 **Layer 1 — Lock signal (board Status):**
 
-The agent's first action when starting work on an issue is to flip the board Status from `ToDo` → `In Progress` via `updateProjectV2ItemFieldValue`. Other agents read Status before claiming and skip anything not in `ToDo`. This is the queryable, board-visible lock.
+The agent's first action when starting work on an issue is to flip the board Status from `Todo` → `In Progress` via `updateProjectV2ItemFieldValue`. Other agents read Status before claiming and skip anything not in `Todo`. This is the queryable, board-visible lock.
 
 **Layer 2 — Traceability (STATUS.md):**
 
@@ -559,8 +610,8 @@ When the work lands (PR merged, issue closed), the session moves the entry from 
 1. git pull (fresh STATUS.md)
 2. Read STATUS.md "What's in progress" — see what other sessions are doing
 3. Pick an issue from "What's next" (or planning's open queue)
-4. Re-check the board Status — confirm still ToDo
-5. Flip Status → In Progress
+4. Re-check the board Status — confirm still Todo
+5. Flip Status → In Progress and assign the issue to yourself
 6. Update STATUS.md "What's in progress" with the issue ref + session name
 7. Commit STATUS.md ("status: claim #N for <work>"), push
 8. Do the work
@@ -579,7 +630,7 @@ Claiming is half the answer. The other half is "which item to claim." With **Pri
 
 **Default sort:**
 
-1. Filter: open issues with the relevant function label (e.g., `planning:pipeline`), `Status = ToDo`, not already in any session's STATUS.md "What's in progress."
+1. Filter: open issues with the relevant function label (e.g., `planning:pipeline`), `Status = Todo`, unassigned, not blocked, and not already in any session's STATUS.md "What's in progress." Backlog is never selected.
 2. Sort: `Priority ASC` (P0 → P3), then `Effort ASC` (1 → 8 within priority), then `Created ASC`.
 3. Agent takes the head.
 
@@ -596,9 +647,23 @@ Highest urgency first; within urgency, smallest size first. Naturally clears sma
 
 **Field-completeness precondition:**
 
-The policy only works if Priority + Effort are set. Agents **skip with warning** any issues missing either field — surface them in the session summary as "needs grooming" rather than picking them. This forces field discipline upstream, where it belongs. A board-hygiene rule (e.g., an `audit-fields` skill) should flag function-labeled issues missing Priority or Effort.
+The policy only works if the required fields are set ([Statuses, readiness and required fields](#statuses-readiness-and-required-fields)): Priority, Theme, Complexity and Type on everything, Effort on Tasks and Stories. Agents **skip with warning** any issue missing one — surface them in the session summary as "needs grooming" rather than picking them. This forces field discipline upstream, where it belongs. A board-hygiene rule (`board hygiene`) flags issues with missing fields.
 
 Don't default-treat missing values (e.g., "missing → P2, E3") — it rewards leaving fields empty and corrodes the policy over time.
+
+## The design loop
+
+Complex work is easy to mis-frame, and the expensive mistakes are the ones made before any code. The design loop is a skill that runs that work in a fixed order, so the operator spends attention only on judgment calls and agents settle everything a check can answer. It ships in [`template/claude-user/.claude/skills/design-loop/`](template/claude-user/.claude/skills/design-loop/SKILL.md), and `setup.sh` installs it at user level, so `/design-loop` works in every repo.
+
+0. **Frame** with the operator: goal, requirements, done when, out of scope, assumptions, and the assumption most likely to be wrong. The operator confirms.
+1. **Thin rail and probes:** build the thinnest end-to-end slice against the real system. Two `design-triage` reviewers on different models read the run cold, sort every open question into fact or judgment, and settle the facts with checks.
+2. **Direction gate:** the operator rules on the judgment calls. Full calls come with neutral options, evidence and a separate recommendation; small ones go with the recommendation unless the operator objects.
+3. **More probes and tests:** each decision becomes a test where it can.
+4. **Contract gate:** the operator approves the contract: scope, decisions and the acceptance tests with their commands.
+5. **Build** to the tests. Reversible mid-build decisions are recorded and the build continues; irreversible or outward-facing ones come to the operator first.
+6. **Verify:** a `design-verifier` agent runs every acceptance test itself and reports met, not met or unverifiable, with evidence.
+
+Each run keeps its record in `design/<YYYY-MM-DD-slug>/` ([File Conventions](#file-conventions)), including the tokens it spent (`cost.md`, from the session transcripts). After a compaction, a `SessionStart` hook prints the active run's framing so the session stays on goal.
 
 ## Decision Review: Green/Blue Doc Escalation
 
@@ -621,7 +686,7 @@ Most of these are **reversible judgment calls** — the kind a competent enginee
 
 **The team operates in two phases, in this order:** (1) **independent critique** — each Reviewer reads the doc cold in its own context, no cross-talk, capturing uncorrelated objections; then (2) **moderated discussion** — Reviewers and Driver see each other's critiques and reconcile, the Decider moderates to consensus or escalation. The order is load-bearing: free discussion *first* lets the first confident voice anchor the rest into a false consensus (groupthink), which is the very failure the independence guards against. Reveal independently, then discuss.
 
-**Where the record lands:** `docs/analysis/YYYY-MM-DD-<topic>.md`; promote to an ADR in `docs/decisions/` when the decision is architectural. This is the asynchronous-review surface — the human audits, overrides, or learns from it after the fact.
+**Where the record lands:** the `decisions.md` of the run's folder, `design/<YYYY-MM-DD-slug>/` (one folder per decision when no run is open); promote to an ADR in `docs/decisions/` when the decision is architectural. This is the asynchronous-review surface — the human audits, overrides, or learns from it after the fact.
 
 **What still escalates to a real human** (the convention replaces the *routine, reversible* gate, not human-owned calls):
 
@@ -640,8 +705,8 @@ Concrete workflows showing how the multi-agent model plays out.
 When you have an open-ended question that needs analysis before action.
 
 1. **Planner (claude.ai chat or Project)** — analyze across repos via GitHub connector. Produce an analysis doc as an artifact or codeblock.
-2. **Implementer (local Claude Code)** — "Create `docs/analysis/YYYY-MM-DD-topic.md` with this content: [paste]." Commit with `analysis:` prefix.
-3. **Coordinator design (chat)** — review the analysis, identify discrete tasks, sketch issue titles, bodies, and field values. Output as a structured list (codeblock or committed `docs/plans/<topic>.md`).
+2. **Implementer (local Claude Code)** — "Create `design/YYYY-MM-DD-topic/research.md` with this content: [paste]." (A run folder can hold research inputs beside its standard files.) Commit with `analysis:` prefix.
+3. **Coordinator design (chat)** — review the analysis, identify discrete tasks, sketch issue titles, bodies, and field values. Output as a structured list (codeblock, or a file committed to the run's `design/` folder).
 4. **Coordinator execution (local Claude Code)** — paste or read the structured list, run your issue-creation skill or `gh issue create` + GraphQL field mutations to actually write the issues to GitHub.
 5. **Implementer (local Claude Code)** — work the issues, commit with `impl:` prefix.
 
@@ -676,7 +741,7 @@ When you sit down to work in a domain.
 
 When work hits a decision that would normally pause for the operator — and the decision is reversible (see Decision Review above for what isn't).
 
-1. **Driver** — frame the decision and author the Green Doc (problem, goals, non-goals, ≥2 options + trade-offs). Commit to `docs/analysis/` with `analysis:`.
+1. **Driver** — frame the decision and author the Green Doc (problem, goals, non-goals, ≥2 options + trade-offs). Commit it to a run folder under `design/` with `analysis:`.
 2. **Reviewers** — adversarially critique the direction; the Driver revises until the Decider approves the strategy gate.
 3. **Driver** — author the Blue Doc (the chosen path in execution detail) in the same record; **Reviewers** scrutinize correctness/scale/safety; **Decider** approves the blueprint gate.
 4. **Implementer** — execute the Blue Doc. The committed record is the human's asynchronous-review surface.
@@ -696,10 +761,10 @@ sessions may have been here recently or be about to arrive. Conventions:
 - **End every session by updating STATUS.md.** What changed, current state,
   open questions, handoff signals.
 - **File layout:**
-  - `docs/analysis/` — analysis docs (planner outputs)
-  - `docs/plans/` — plans (coordinator outputs)
+  - `design/<YYYY-MM-DD-slug>/` — one folder per design-loop run
+    (`scratch/` inside it is gitignored)
+  - `docs/` — durable docs for readers
   - `docs/decisions/` — ADRs
-  - `docs/runbooks/` — operational procedures
 - **Commit prefixes:** `analysis:`, `plan:`, `impl:`, `status:`, plus standard
   `feat:`/`fix:`/`docs:`.
 - **GitHub Issues are the task graph.** Open issues = pending work. Each
@@ -783,7 +848,7 @@ This is the heart of the architecture.
 
 For each domain repo:
 
-- Scaffold `docs/{analysis,plans,decisions,runbooks}/` (with `.gitkeep` files to keep empty dirs in git)
+- Scaffold `design/` and `docs/decisions/` (with `.gitkeep` files to keep empty dirs in git), and gitignore `design/*/scratch/`
 - Create `CLAUDE.md` with the multi-agent boilerplate from Part 3 plus domain-specific content
 - Create `STATUS.md` with current state
 - Create or copy a Project board, one per product once a business has several (use the Copy project pattern from Part 3 if you have an existing board to template from)
@@ -838,7 +903,7 @@ A test suite replaces "use it for a few days and see if it works" with concrete 
 
 # Section 5: Domain + repo layers exist
 # - ~/<each-domain>/CLAUDE.md exists (domain layer, root file)
-# - Each hub repo's <repo>/.claude/commands/ has the expected skills
+# - ~/.claude/skills/ has the operating skills; each hub repo's .claude/ has its team skills
 # - (Optional) the domain-root .claude/ aggregation resolves if you use it
 
 # Section 6: GitHub auth
@@ -915,7 +980,7 @@ Stow refuses to overwrite real files (only symlinks under its management). Move 
 
 **Username case sensitivity in git remotes.** If you change a GitHub username's case (e.g., `Foo` → `foo`), existing local remotes still have the old case. Most operations work due to case-insensitive matching, but some tooling breaks. Update remotes with `git remote set-url` after a case change.
 
-**Web Claude Code only sees the cloned repo.** This is why skills belong at the repo root's `.claude/` — a web session that clones the repo gets them automatically. The only thing web sessions miss is the domain-root `CLAUDE.md` and the optional domain-level skill aggregation (both live outside the repo). Cross-repo skills that reference siblings by relative path (`../other-repo/...`) also won't resolve in a web session, since the siblings aren't cloned. For those, accept a smaller cloud skill set or use a submodule.
+**Web Claude Code only sees the cloned repo.** Team skills committed at the repo root's `.claude/` come along; user-level skills, the domain-root `CLAUDE.md` and the optional domain-level skill aggregation don't (all live outside the repo). Cross-repo skills that reference siblings by relative path (`../other-repo/...`) also won't resolve in a web session, since the siblings aren't cloned. For those, carry a copy in the repo ([Stow Operations](#stow-operations)) or accept a smaller cloud skill set.
 
 **claude.ai connector not seeing a new org.** After installing the Claude GitHub App on a new org, the claude.ai connector cache can lag. Disconnect and reconnect the GitHub connector in claude.ai settings.
 
@@ -959,7 +1024,7 @@ The underlying constraint: claude.ai's code execution sandbox blocks `api.github
 
 - **Planning, designing, drafting** all happen fine in claude.ai chat — analyses, issue text, hierarchy design, field values
 - **Actual writes to GitHub** (creating issues, updating Project field values, marking templates) happen in Claude Code via `gh` CLI and `gh api graphql` mutations
-- Hand off via copy/paste, structured codeblocks, or by having Claude Code read a `docs/plans/<topic>.md` that chat committed
+- Hand off via copy/paste, structured codeblocks, or by having Claude Code read a file in a `design/` run folder that chat committed
 
 **Workarounds:**
 
@@ -974,7 +1039,7 @@ The underlying constraint: claude.ai's code execution sandbox blocks `api.github
 |------|---------|
 | **Surface** | A distinct Claude product entry point (claude.ai chat, local Claude Code, web Claude Code, etc.) |
 | **Resolution walk** | How Claude Code finds config up the directory tree. CLAUDE.md merges from every ancestor; slash commands stop at the first repo boundary; memory is keyed to the exact launch cwd (no walk) |
-| **Project boundary** | A directory with `CLAUDE.md` or `.git` at its root. Slash-command resolution does not walk above it — the reason skills must live at the repo root |
+| **Project boundary** | A directory with `CLAUDE.md` or `.git` at its root. Slash-command resolution does not walk above it — the reason skills live at user level or at the repo root |
 | **Universal layer** | `~/.claude/` — applies to every session regardless of where you cd'd |
 | **Domain layer** | `~/<domain>/CLAUDE.md` (a root file) — applies inside one work/life domain |
 | **Repo layer** | `<repo>/.claude/` (skills, agents) + `<repo>/CLAUDE.md` — applies inside one specific repo; where skills live |
