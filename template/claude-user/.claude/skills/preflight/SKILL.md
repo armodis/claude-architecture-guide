@@ -10,18 +10,19 @@ description: Check that every checkout a run touches is clean and current, and t
 ## Run it
 
 ```
-python3 <this skill's folder>/scripts/preflight.py [PATH ...] [--pull]
+python3 <this skill's folder>/scripts/preflight.py [PATH ...] [--pull] [--no-config]
 ```
 
 `<this skill's folder>` is `~/.claude/skills/preflight/` when installed at user level.
 
-It checks the current repo plus the paths given; with no paths, the config's `repos` list instead. Each repo is fetched, then reported on one line: its branch, clean or changed, and ahead and behind its own remote branch. Then each probe runs and reports signed in or failed.
+It checks the current repo plus the paths given; with no paths, the config's `repos` list instead. `--no-config` skips the config's list and probes. Each repo is fetched, then reported on one line: its branch, clean or changed, and ahead and behind its own remote branch. Then each probe runs and reports signed in or failed.
 
 - **Blocks (exit 1):**
   - uncommitted changes while behind the branch's own remote branch;
   - a branch that has diverged from its own remote branch;
+  - a rebase, merge, cherry-pick or revert stopped part-way;
   - a failed probe.
-- **Can't check (exit 2):** a missing path, a folder that isn't a git checkout, a fetch that fails or times out, an unreadable config.
+- **Can't check (exit 2):** a missing path, a folder that isn't a git checkout, a fetch that fails or times out, a malformed config or a `$BOARD_CONFIG` naming a missing file, or nothing to check at all.
 - **Reported, never blocking:**
   - untracked files;
   - a branch not pushed yet;

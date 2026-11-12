@@ -57,5 +57,50 @@ class CommandLine(unittest.TestCase):
         return t
 
 
+class ConfigShape(unittest.TestCase):
+    def load(self, text, env=None):
+        import tempfile, shutil
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "boards.json")
+        if text is not None:
+            with open(path, "w") as f:
+                f.write(text)
+        return pf.load_section(path)
+
+    def test_a_good_section_loads(self):
+        sec = self.load('{"boards": {}, "preflight": {"repos": ["~/x"], "probes": [{"run": "true"}]}}')
+        self.assertEqual(sec["repos"], ["~/x"])
+
+    def test_no_section_is_empty(self):
+        self.assertEqual(self.load('{"boards": {}}'), {})
+
+    def test_malformed_sections_are_refused(self):
+        for text in ('[]', '{"preflight": []}', '{"preflight": {"repos": "~/x"}}',
+                     '{"preflight": {"probes": ["gh api user"]}}', '{"preflight": {"probes": [{"name": "x"}]}}'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.load(text)
+
+    def test_a_board_config_variable_naming_a_missing_file_is_refused(self):
+        saved = os.environ.get("BOARD_CONFIG")
+        os.environ["BOARD_CONFIG"] = "/nowhere/boards.json"
+        try:
+            with self.assertRaises(ValueError):
+                pf.load_section("/nowhere/boards.json")
+        finally:
+            if saved is None:
+                os.environ.pop("BOARD_CONFIG")
+            else:
+                os.environ["BOARD_CONFIG"] = saved
+
+
+class Wording(unittest.TestCase):
+    def test_describe(self):
+        self.assertEqual(pf.describe(0, 0), "up to date with")
+        self.assertEqual(pf.describe(2, 0), "2 ahead of")
+        self.assertEqual(pf.describe(0, 1), "1 behind")
+        self.assertEqual(pf.describe(2, 1), "2 ahead and 1 behind")
+
+
 if __name__ == "__main__":
     unittest.main()
