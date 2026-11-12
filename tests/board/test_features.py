@@ -67,6 +67,18 @@ class RequiredFields(unittest.TestCase):
             check(fixed, s=s, body_of=lambda r: "no marker here")
         check(fixed, s=s, body_of=lambda r: "## Done when\nIt works.")
 
+    def test_parent_and_type_set_earlier_in_the_plan_count_for_todo(self):
+        s = tree_snap(item("acme-co/ops#4", status="Backlog", typ=None, Priority="P1", Effort=1))  # no parent, no type
+        check([{"op": "set_type", "item": "acme-co/ops#4", "type": "Task"},
+               {"op": "attach", "parent": "acme-co/ops#2", "child": "acme-co/ops#4"},
+               {"op": "set_field", "item": "acme-co/ops#4", "field": "Status", "value": "Todo"}],
+              s=s, body_of=lambda r: "Done when: it works")
+
+    def test_what_done_looks_like_heading_counts(self):
+        self.assertTrue(board.has_done_marker(WORK, "## What done looks like\nThe export runs."))
+        self.assertTrue(board.has_done_marker(WORK, "**Done when:** x"))
+        self.assertFalse(board.has_done_marker(WORK, "We are done with this when it works"))
+
     def test_fixture_creates_are_exempt(self):
         check([{"op": "create", "repo": "acme-co/ops", "title": "[Test fixture] t", "labels": ["test-fixture"]}])
 
@@ -96,13 +108,19 @@ class Hierarchy(unittest.TestCase):
             check([dict(FULL, op="create", repo="acme-co/ops", title="t", parent="acme-co/ops#3")])
 
     def test_promotion_sets_the_parent_type_and_demotion_the_leaf_type(self):
-        steps, _ = check([{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"}])
-        self.assertEqual([(op["op"], op.get("type")) for _, op, _ in steps], [("set_field", None), ("set_type", "Feature")])
+        promote = [{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"},
+                   {"op": "attach", "parent": "acme-co/ops#1", "child": "acme-co/ops#3"}]
+        steps, _ = check(promote)
+        self.assertEqual([(op["op"], op.get("type")) for _, op, _ in steps],
+                         [("set_field", None), ("set_type", "Feature"), ("attach", None)])
+        with self.assertRaisesRegex(board.BoardError, "same or a lower"):
+            check(promote[:1])  # a User Story left under a User Story
         steps, _ = check([{"op": "clear_field", "item": "acme-co/ops#2", "field": "Category"}])
         self.assertEqual([op.get("type") for _, op, _ in steps], [None, "Task"])
         steps, _ = check([{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"},
-                          {"op": "set_type", "item": "acme-co/ops#3", "type": "Bug"}])
-        self.assertEqual(len(steps), 2, "a plan that sets the type itself gets no implied op")
+                          {"op": "set_type", "item": "acme-co/ops#3", "type": "Bug"},
+                          {"op": "attach", "parent": "acme-co/ops#1", "child": "acme-co/ops#3"}])
+        self.assertEqual(len(steps), 3, "a plan that sets the type itself gets no implied op")
 
 
 class MentionsAndLinks(unittest.TestCase):
@@ -196,7 +214,7 @@ class Release(unittest.TestCase):
         board.pull, board.apply_plan = self.saved
 
     def test_items_move_to_done_only_when_every_merged_pr_is_in_the_tag(self):
-        merged = lambda oid: {"ref": "x", "state": "MERGED", "merged": True, "merge_oid": oid}
+        merged = lambda oid: {"ref": "acme-co/ops#90", "state": "MERGED", "merged": True, "merge_oid": oid}
         s = tree_snap(item("acme-co/ops#4", status="Pending Release", state="CLOSED", prs=[merged("a1")]),
                       item("acme-co/ops#5", status="Pending Release", state="CLOSED", prs=[merged("a1"), merged("b2")]),
                       item("acme-co/web#6", status="Pending Release", state="CLOSED", prs=[merged("a1")]))

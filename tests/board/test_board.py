@@ -275,7 +275,9 @@ class Hygiene(unittest.TestCase):
                 ("level", "acme-co/ops#5", "User Story under Task acme-co/ops#3 (not lower)"),
                 ("cross-owner", "jdoe/tasks#1", "issue from another owner on the company board"),
                 ("missing", "acme-co/ops#9", "sub-issue of acme-co/ops#1 but not on the board"),
-                ("missing", "acme-co/ops#1", "no assignee")}
+                ("missing", "acme-co/ops#1", "no assignee"),
+                ("missing", "acme-co/ops#1", "no parent link"),   # an Epic sits under a Milestone on this board
+                ("missing", "acme-co/ops#8", "no parent link")}
         self.assertEqual(got, want)
 
     def test_fixture_included_on_request(self):

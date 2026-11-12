@@ -109,7 +109,7 @@ DEFAULTS = {
                  "pending": "Pending Release", "done": "Done"},
     "leaf_type": "Task", "parent_type": "Feature", "release": "none",
     "required_fields": ["Status", "Priority", "Theme", "Complexity"], "effort_levels": ["User Story", "Task"],
-    "done_marker": r"(?im)^\W*(done when|done looks like|definition of done)\b",
+    "done_marker": r"(?im)^\W*(?:what\s+)?(done when|done looks like|definition of done)\b",
     "freshness_hours": 24, "settle_seconds": 3, "stale_days": 7, "review_over_items": 10,
     "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
     "repos": [], "outside_hierarchy": [],
@@ -303,6 +303,8 @@ def snapshot(b, write=True):
     if write:
         with locked(b):
             old = read_snapshot_file(b)
+            if old and old.get("taken", "") > snap["taken"]:  # a newer pull landed while this one ran
+                return old
             keep = {e["ref"]: e["analysis"] for e in (old or {}).get("items", []) if e.get("ref") and e.get("analysis")}
             for e in items:
                 if e.get("ref") in keep:
@@ -531,7 +533,7 @@ def unlinked_prs(repo, project_id):
     o, r = repo.split("/")
     nodes = (gql(OPEN_PRS_Q, o=o, r=r)["repository"] or {"pullRequests": {"nodes": []}})["pullRequests"]["nodes"]
     return [f"{repo}#{n['number']}" for n in nodes if n["closingIssuesReferences"]["totalCount"] == 0
-            and project_id not in {x["project"]["id"] for x in n["projectItems"]["nodes"]}]
+            and project_id not in {(x.get("project") or {}).get("id") for x in n["projectItems"]["nodes"] if x}]
 
 
 def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
@@ -577,7 +579,7 @@ def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
             if st == st_["review"] and not open_pr:
                 add("pull request", r, f"{st_['review']} with no open pull request")
             for gap in required_gaps(b, f, e.get("issue_type"), e["parent"], assignees=e.get("assignees", [])):
-                if gap != "parent link":  # orphans and levels are reported below
+                if gap != "parent link" or e.get("issue_type") != b["leaf_type"]:  # Tasks: the orphan check below
                     add("missing", r, f"no {gap}")
         if st == b["statuses"]["claim"]:
             last = max(x for x in (e["updated"], e.get("item_updated")) if x)
@@ -756,6 +758,7 @@ def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=
 
     lv = levels(b)
     planned = {}  # ref -> fields set earlier in the plan
+    planned_parent, planned_type = {}, {}  # ref -> parent / issue type set earlier in the plan
 
     def upside_down(n, child_level, parent_level, child, parent):
         if child_level in lv and parent_level in lv and lv.index(child_level) <= lv.index(parent_level):
@@ -797,6 +800,11 @@ def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=
             raise BoardError(f"op {n}: {op['child']} under {op['parent']} crosses owners; set \"cross_owner\": true")
         if kind == "attach":
             upside_down(n, infos["child"].get("level"), infos["parent"].get("level"), op["child"], op["parent"])
+            planned_parent[op["child"]] = op["parent"]
+        if kind == "detach":
+            planned_parent[op["child"]] = None
+        if kind == "set_type":
+            planned_type[op["item"]] = op["type"]
         if kind in LINK_KEYS:
             other = op[LINK_KEYS[kind]]
             if other == op["item"]:
@@ -836,7 +844,8 @@ def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=
                     and not r.startswith("$") and r in idx and not is_fixture(b, idx[r]):
                 e = idx[r]
                 fields_now = {k: v for k, v in dict(e["fields"], **planned[r]).items() if v is not None}
-                gaps = required_gaps(b, fields_now, e.get("issue_type"), e["parent"])
+                gaps = required_gaps(b, fields_now, planned_type.get(r, e.get("issue_type")),
+                                     planned_parent[r] if r in planned_parent else e["parent"])
                 if body_of is not None and not has_done_marker(b, body_of(r)):
                     gaps.append("a done-when line in the body")
                 if gaps:
@@ -907,6 +916,22 @@ def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=
         if cross:
             reasons.append(f"op {n}: crosses owners")
         steps.append((n, op, infos))
+    # A level changed in place must still sit below its parent and above its children, once the
+    # whole plan has run (it may reparent after the Category op).
+    def final_level(ref):
+        if ref in planned and "Category" in planned[ref]:
+            return planned[ref]["Category"] or b["leaf_type"]
+        return level_of(b, idx[ref]) if ref in idx else None
+
+    def final_parent(ref):
+        return planned_parent[ref] if ref in planned_parent else (idx[ref]["parent"] if ref in idx else None)
+    for ref in [r for r, f in planned.items() if "Category" in f and r in idx]:
+        par = final_parent(ref)
+        if par:
+            upside_down("final", final_level(ref), final_level(par), ref, par)
+        for ch in idx[ref]["children"]:
+            if final_parent(ch) == ref:
+                upside_down("final", final_level(ch), final_level(ref), ch, ref)
     if len(touched) > b["review_over_items"]:
         reasons.append(f"touches {len(touched)} items (over {b['review_over_items']})")
     if fixture_only:
@@ -1216,9 +1241,9 @@ def apply_plan(b, boards, plan, approved=False, dry_run=False, log=print):
                 expect(gh.issue(r, fresh=True)["state"] == "OPEN", f"{r} open")
                 time.sleep(b["settle_seconds"])  # let "Item reopened" set its Status before later ops
             elif k in ("relate", "unrelate", "block", "unblock"):
-                r, other = real(op["item"]), op[LINK_KEYS[k]]
+                r, other = real(op["item"]), real(op[LINK_KEYS[k]])
                 m = {"relate": M_RELATE, "unrelate": M_UNRELATE, "block": M_BLOCK, "unblock": M_UNBLOCK}[k]
-                gql(m, i=iid(op["item"]), o=gh.issue(other)["id"])
+                gql(m, i=iid(op["item"]), o=iid(op[LINK_KEYS[k]]))
                 got = gh.issue(r, fresh=True)["relates" if k in ("relate", "unrelate") else "blocked_by"]
                 expect((other in got) == (k in ("relate", "block")), f"{r} {k} {other}")
             elif k == "add_pr":
@@ -1452,6 +1477,8 @@ def in_release(repo, oid, tag):
 def release(b, boards, repo, tag, dry_run=False, included=in_release, log=print):
     """Move the board's Pending Release items from one repo to Done once every merged pull
     request that closed them is part of the tag."""
+    if included is in_release and rest(f"repos/{repo}/git/ref/tags/{tag}") is None:
+        raise BoardError(f"no tag {tag} in {repo}")
     snap = pull(b)
     plan = []
     for e in sorted(by_ref(snap).values(), key=lambda e: e["ref"]):
@@ -1461,7 +1488,8 @@ def release(b, boards, repo, tag, dry_run=False, included=in_release, log=print)
         if not merged:
             log(f"{e['ref']}: Pending Release with no merged pull request; left as it is")
             continue
-        if all(included(repo, p["merge_oid"], tag) for p in merged):
+        if all(included(p["ref"].split("#")[0], p["merge_oid"], tag) if p["ref"].split("#")[0] == repo else True
+               for p in merged):  # pull requests from other repos ship on their own tags
             plan.append({"op": "set_field", "item": e["ref"], "field": "Status", "value": b["statuses"]["done"]})
         else:
             log(f"{e['ref']}: not in {tag} yet")
@@ -1560,9 +1588,17 @@ def main(argv):
     elif cmd == "fields":
         print(json.dumps(fields(board_cfg(boards, a[0])), indent=1))
     elif cmd == "snapshot":
+        failed = 0
         for n in (list(boards) if o.get("--all") else a):
-            s = snapshot(board_cfg(boards, n))
-            print(f"{n}: {len(s['items'])} items -> {os.path.join(CACHE, n + '.json')}")
+            b = board_cfg(boards, n)
+            try:
+                s = pull(b)
+            except BoardError as e:
+                print(f"board: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            print(f"{b['name']}: {len(s['items'])} items -> {snapshot_path(b)}")
+        return 1 if failed else 0
     elif cmd == "tree":
         b = board_cfg(boards, a[0])
         print(tree(b, load_snapshot(b), a[1]))
@@ -1574,7 +1610,7 @@ def main(argv):
         picks, skipped = select(b, load_snapshot(b), o.get("--repo"), o.get("--label"), int(o.get("--count", "1")),
                                 include_fixture=o.get("--include-fixture", False))
         for e in picks:
-            print(f'{e["ref"]}  {e["fields"]["Priority"]}  effort {e["fields"]["Effort"]:g}  {e["title"]}')
+            print(f'{e["ref"]}  {e["fields"]["Priority"]}  effort {e["fields"].get("Effort") if e["fields"].get("Effort") is not None else "-"}  {e["title"]}')
         for r, why in skipped:
             print(f"skipped {r}: {why}", file=sys.stderr)
         if not picks:

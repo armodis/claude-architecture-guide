@@ -16,7 +16,8 @@
 #     with this repo listed in its board's "repos".
 #   - variable BOARD_REF (optional): the guide commit to take the board command from; pin a
 #     commit SHA. Defaults to main.
-# Without BOARD_TOKEN the job skips.
+# Without BOARD_TOKEN the job skips. Pull requests from forks and Dependabot get no secrets, so
+# their merges skip too; run `board guard owner/repo#N` by hand for those.
 name: board
 
 on:
@@ -36,6 +37,9 @@ jobs:
       GH_TOKEN: ${{ secrets.BOARD_TOKEN }}
       BOARD_CONFIG: ${{ github.workspace }}/.board.json
       BOARD_REF: ${{ vars.BOARD_REF || 'main' }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TAG: ${{ github.event.release.tag_name }}
     steps:
       - name: Skip without a token
         if: env.GH_TOKEN == ''
@@ -51,11 +55,11 @@ jobs:
       - name: Guard issues other pull requests still close
         if: env.GH_TOKEN != '' && github.event_name == 'pull_request'
         run: |
-          rc=0; "$RUNNER_TEMP/board" guard "${{ github.repository }}#${{ github.event.pull_request.number }}" || rc=$?
+          rc=0; "$RUNNER_TEMP/board" guard "$REPO#$PR_NUMBER" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
       - name: Move released items to Done
         if: env.GH_TOKEN != '' && github.event_name == 'release'
         run: |
-          board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "${{ github.repository }}")
-          rc=0; "$RUNNER_TEMP/board" release "$board_name" "${{ github.repository }}" "${{ github.event.release.tag_name }}" || rc=$?
+          board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "$REPO")
+          rc=0; "$RUNNER_TEMP/board" release "$board_name" "$REPO" "$TAG" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
