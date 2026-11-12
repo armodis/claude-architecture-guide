@@ -69,7 +69,8 @@ Rules every plan is checked against:
     of relate and block may be any issue: those links work across owners and move nothing.
   - A create carries the board's required fields: required_fields (Status, Priority, Theme,
     Complexity), a type, Effort on effort_levels, Category on the parent type, and a parent
-    below the top level. Moving an issue to Todo needs the same, plus a done-when line in its
+    below the top level (levels in parent_optional, such as standalone personal Tasks, may go
+    without). Moving an issue to Todo needs the same, plus a done-when line in its
     body (done_marker). Test-fixture items are exempt.
   - A parent link that puts a level under the same or a lower one is refused; skipped levels
     are allowed and reported by hygiene.
@@ -112,7 +113,7 @@ DEFAULTS = {
     "done_marker": r"(?im)^\W*(?:what\s+)?(done when|done looks like|definition of done)\b",
     "freshness_hours": 24, "settle_seconds": 3, "stale_days": 7, "review_over_items": 10,
     "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
-    "repos": [], "outside_hierarchy": [],
+    "repos": [], "outside_hierarchy": [], "parent_optional": [],
 }
 
 
@@ -480,7 +481,8 @@ def required_gaps(b, fields, typ, parent, level=None, assignees=None):
     if level in b["effort_levels"] and fields.get("Effort") is None:
         gaps.append("Effort")
     top = b["hierarchy"][0] if b["hierarchy"] else None
-    if not parent and level and level != top and level not in b.get("outside_hierarchy", []):
+    if not parent and level and level != top and level not in b.get("outside_hierarchy", []) \
+            and level not in b.get("parent_optional", []):
         gaps.append("parent link")
     if assignees is not None and fields.get("Status") in (b["statuses"]["claim"], b["statuses"]["review"]) and not assignees:
         gaps.append("assignee")
@@ -594,7 +596,7 @@ def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
         my = level_of(b, e)
         if my is None and not cat:
             add("level", r, "no Category and not a Task")
-        if typ == b["leaf_type"] and not e["parent"]:
+        if typ == b["leaf_type"] and not e["parent"] and b["leaf_type"] not in b.get("parent_optional", []):
             add("orphan", r, "Task with no parent")
         if e["parent"] and e["parent"] in idx and my in lv:
             pl = level_of(b, idx[e["parent"]])

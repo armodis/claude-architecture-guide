@@ -131,6 +131,8 @@ def load(path):
         for r in o.get("repos", []):
             if not isinstance(r, dict) or not r.get("name"):
                 raise ProvisionError(f"{path}: a repo of {o['login']} is missing \"name\"")
+            if "automation" in r and not isinstance(r["automation"], bool):
+                raise ProvisionError(f"{path}: repo {r['name']}: automation must be true or false")
             if r.get("release", "none") not in ("none", "tags"):
                 raise ProvisionError(f"{path}: repo {r['name']}: release must be none or tags")
         repos = {r["name"] for r in o.get("repos", [])}
@@ -228,7 +230,7 @@ class Run:
         self.say("✓", f"{typ} {login}")
         repo_ids = {}
         for r in o.get("repos", []):
-            repo_ids[r["name"]] = self.repo(login, r)
+            repo_ids[r["name"]] = self.repo(login, r, typ)
         release = {r["name"]: r.get("release", "none") for r in o.get("repos", [])}
         for b in o.get("boards", []):
             found, after = [], None
@@ -241,12 +243,13 @@ class Run:
             boards = {p["title"]: p for p in found if not p["closed"] and p["title"] == b["title"]}
             self.board(login, typ, node["id"], boards, b, repo_ids, release)
 
-    def repo(self, owner, r):
+    def repo(self, owner, r, typ="organization"):
         name = f"{owner}/{r['name']}"
         found = self.gh.rest(f"repos/{name}")
         if found:
             rid = found["node_id"]
-            if self.gh.is_empty(name):
+            empty = self.gh.is_empty(name)
+            if empty:
                 self.by_hand(f"repo {name} exists but is empty: push its layout (or delete it and run this again)")
             else:
                 self.say("✓", f"repo {name}")
@@ -282,7 +285,56 @@ class Run:
             if self.live:
                 self.gh.run(["label", "create", label, "--repo", name, "--color", FIXTURE_LABEL[1],
                              "--description", FIXTURE_LABEL[2]])
+        if found and not empty:
+            self.automation(name, r, typ)
         return rid
+
+    def automation(self, name, r, typ="organization"):
+        """The board workflow keeps Status right for issues with several closing pull requests and
+        moves released items to Done. It needs a token (a GitHub App's BOARD_APP_ID variable and
+        BOARD_APP_KEY secret, or a BOARD_TOKEN secret) and the BOARD_CONFIG variable, at repo or
+        organization level. Adding them is the owner's to do, so they are reported, never set.
+        A repo marked "automation": false in github.json is skipped."""
+        if r.get("automation") is False:
+            return
+        if self.gh.rest(f"repos/{name}/contents/.github/workflows/board.yml") is None:
+            self.by_hand(f"{name}: copy template/repo/.github/workflows/board.yml into the repo (needed for issues "
+                         "with several closing pull requests, and for tag releases; or set \"automation\": false)")
+            return
+        try:
+            have = self.actions_names(name, typ == "organization")
+        except ProvisionError:
+            self.by_hand(f"{name}: couldn't read its Actions secrets and variables with this token; check by hand that "
+                         "it has a token (BOARD_APP_ID and BOARD_APP_KEY, or BOARD_TOKEN) and BOARD_CONFIG")
+            return
+        missing = []
+        if not ({"var:BOARD_APP_ID", "secret:BOARD_APP_KEY"} <= have or "secret:BOARD_TOKEN" in have):
+            missing.append("a token: variable BOARD_APP_ID and secret BOARD_APP_KEY (a GitHub App, for an organization "
+                           "board) or secret BOARD_TOKEN (a personal access token with repo and project)")
+        if "var:BOARD_CONFIG" not in have:
+            missing.append("variable BOARD_CONFIG (the board config JSON)")
+        if missing:
+            self.by_hand(f"{name}: add {'; and '.join(missing)} in Settings > Secrets and variables > Actions; "
+                         "until then the board workflow skips")
+
+    def actions_names(self, name, org):
+        """Secret and variable names visible to a repo's Actions: its own, and for a repo in an
+        organization the organization's shared with it (GitHub rejects that lookup, 422, for a
+        user's repo)."""
+        out = set()
+        lists = [("secret", "actions/secrets", "secrets"), ("var", "actions/variables", "variables")]
+        if org:
+            lists += [("secret", "actions/organization-secrets", "secrets"), ("var", "actions/organization-variables", "variables")]
+        for kind, path, key in lists:
+            page = 1
+            while True:  # 100 is GitHub's page limit
+                d = self.gh.rest(f"repos/{name}/{path}?per_page=100&page={page}") or {}
+                items = d.get(key, [])
+                out |= {f"{kind}:{x['name']}" for x in items}
+                if len(items) < 100:
+                    break
+                page += 1
+        return out
 
     def board(self, owner, typ, owner_id, boards, b, repo_ids, release=None):
         p = boards.get(b["title"])

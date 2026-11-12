@@ -79,6 +79,16 @@ class RequiredFields(unittest.TestCase):
         self.assertTrue(board.has_done_marker(WORK, "**Done when:** x"))
         self.assertFalse(board.has_done_marker(WORK, "We are done with this when it works"))
 
+    def test_parent_optional_levels_need_no_parent(self):
+        standalone = dict(WORK, parent_optional=["Task"])
+        task = dict(FULL, op="create", repo="acme-co/ops", title="t", parent=None)
+        with self.assertRaisesRegex(board.BoardError, "parent link"):
+            check([task])
+        board.check_plan(standalone, tree_snap(), [task], no_lookup)
+        s = tree_snap(item("acme-co/ops#4", Priority="P1", Effort=1, assignees=()))
+        self.assertIn(("orphan", "acme-co/ops#4", "Task with no parent"), set(board.hygiene(WORK, s)))
+        self.assertNotIn(("orphan", "acme-co/ops#4", "Task with no parent"), set(board.hygiene(standalone, s)))
+
     def test_fixture_creates_are_exempt(self):
         check([{"op": "create", "repo": "acme-co/ops", "title": "[Test fixture] t", "labels": ["test-fixture"]}])
 
