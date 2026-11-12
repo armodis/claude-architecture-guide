@@ -1,5 +1,5 @@
-"""Offline tests for the design loop's cost script: marks, step windows, and the report on an
-open, closed and reopened run, against a made-up transcript."""
+"""Offline tests for the design loop's cost report on open, closed and reopened runs, against a
+made-up transcript."""
 import json
 import os
 import shutil
@@ -36,7 +36,7 @@ class CostReport(unittest.TestCase):
         shutil.copy(TEMPLATE, os.path.join(self.run_dir, "cost.md"))
 
     def cost(self, *args):
-        env = dict(os.environ, HOME=self.home, CLAUDE_SESSION_ID=SID, CLAUDE_CODE_SESSION_ID=SID)
+        env = dict(os.environ, HOME=self.home)
         return subprocess.run([sys.executable, COST, *args], capture_output=True, text=True, env=env)
 
     def mark(self, step, at):
@@ -57,6 +57,20 @@ class CostReport(unittest.TestCase):
         self.assertIn("Run closed 2026-01-01T02:00:00+00:00", text)
         self.assertIn("| 0-frame | claude-opus-5-5 | 1 | 0 | 0 | 10 |", text)
         self.assertIn("| 5-build | claude-opus-5-5 | 1 | 0 | 0 | 20 |", text, "usage after closed is not counted")
+
+    def test_open_run_counts_the_last_step_to_now(self):
+        self.mark("0-frame", "2026-01-01T00:00:00+00:00")
+        text = self.report()
+        self.assertIn("Run still open", text)
+        self.assertIn("| 0-frame | claude-opus-5-5 | 3 | 0 | 0 | 70 |", text)
+
+    def test_reopening_in_the_same_second_as_closed_reopens(self):
+        self.mark("0-frame", "2026-01-01T00:00:00+00:00")
+        self.mark("closed", "2026-01-01T02:00:00+00:00")
+        self.mark("6-verify", "2026-01-01T02:00:00+00:00")
+        text = self.report()
+        self.assertIn("Run still open", text)
+        self.assertIn("| 6-verify | claude-opus-5-5 | 1 | 0 | 0 | 40 |", text)
 
     def test_reopened_run_counts_the_new_step(self):
         self.mark("0-frame", "2026-01-01T00:00:00+00:00")
