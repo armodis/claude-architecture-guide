@@ -22,10 +22,10 @@ FIELDS = {"Status": {"id": "F1", "type": "SINGLE_SELECT", "options": OPTS("Todo"
           "Priority": {"id": "F2", "type": "SINGLE_SELECT", "options": OPTS("P1", "P2", "P3")}}
 
 
-def it(ref, parent=None, state="OPEN", **f):
+def it(ref, parent=None, state="OPEN", typ="Task", **f):
     return {"item_id": "PVTI_" + ref, "kind": "ISSUE", "archived": False, "title": "[Test fixture] " + ref, "fields": dict(f),
             "ref": ref, "issue_id": "I_" + ref, "state": state, "state_reason": None, "created": "2026-01-01T00:00:00Z",
-            "updated": "2026-01-01T00:00:00Z", "url": "u", "issue_type": "Task", "labels": ["test-fixture"], "parent": parent,
+            "updated": "2026-01-01T00:00:00Z", "url": "u", "issue_type": typ, "labels": ["test-fixture"], "parent": parent,
             "children": []}
 
 
@@ -34,7 +34,8 @@ def sn(name, items):
             "items": items}
 
 
-BASE = [it("acme-co/ops#4"), it("acme-co/ops#5", parent="acme-co/ops#4")]
+BASE = [it("acme-co/ops#4", typ="Feature", Category="Epic"),
+        it("acme-co/ops#5", parent="acme-co/ops#4", typ="Feature", Category="User Story")]
 CREATE = {"op": "create", "repo": "acme-co/ops", "title": "[Test fixture] tmp", "type": "Task", "parent": "acme-co/ops#5",
           "labels": ["test-fixture"], "fields": {"Priority": "P3"}, "as": "tmp"}
 AFTER = BASE + [it("acme-co/ops#9", parent="acme-co/ops#5")]
@@ -55,7 +56,10 @@ def run(plan, fail_on=None, after=None, after_personal=(), race=False, trim=Fals
         def issue(self, ref, fresh=False):
             parent = "acme-co/ops#5" if ref == "acme-co/ops#9" else None
             return dict(id="I_" + ref, owner=ref.split("/")[0], title="[Test fixture] x", state="OPEN", reason=None,
-                        type="Task", labels=["test-fixture"], parent=parent)
+                        type="Task", labels=["test-fixture"], parent=parent, body="", assignees=[], relates=[], blocked_by=[])
+
+        def pr(self, ref):
+            raise board.BoardError(f"no pull request {ref}")
 
         def repo(self, n):
             return {"id": "R", "types": {"Task": "T"}, "labels": {"test-fixture": "L"}}
@@ -121,12 +125,12 @@ class Apply(unittest.TestCase):
                {"op": "set_field", "item": "acme-co/ops#4", "field": "Priority", "value": "P0"}]
 
     def test_options_added_earlier_in_the_plan_can_be_set(self):
-        after = [it("acme-co/ops#4", Priority="P0"), it("acme-co/ops#5", parent="acme-co/ops#4")]
+        after = [it("acme-co/ops#4", typ="Feature", Category="Epic", Priority="P0"), it("acme-co/ops#5", parent="acme-co/ops#4", typ="Feature", Category="User Story")]
         rc, log = run(self.PLAN_P0, after=after)
         self.assertEqual(rc, board.APPLIED, log)
 
     def test_an_unplanned_change_in_an_edited_option_field_fails(self):
-        after = [it("acme-co/ops#4", Priority="P0"), it("acme-co/ops#5", parent="acme-co/ops#4", Priority="P0")]
+        after = [it("acme-co/ops#4", typ="Feature", Category="Epic", Priority="P0"), it("acme-co/ops#5", parent="acme-co/ops#4", typ="Feature", Category="User Story", Priority="P0")]
         rc, log = run(self.PLAN_P0, after=after)
         self.assertEqual(rc, board.FAILED, log)
 

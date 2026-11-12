@@ -1,41 +1,46 @@
 ---
 name: item
-description: File, groom, claim, finish or close an issue on a GitHub project board through the `board` command, with every required field set and the change read back. Use when the user asks to file an issue or task, add work to the board, set fields, move an item under a parent, claim or finish an item, or close one as done, not planned or duplicate.
+description: File, groom, link, claim, finish or close an issue on a GitHub project board through the `board` command, with every required field set and the change read back. Use when the user asks to file an issue or task, add work to the board, set fields, move an item under a parent, link or block issues, claim or finish an item, or close one as done, not planned or duplicate.
 ---
 
 # item
 
-Every board write goes through `board` (`board --help` lists the commands and the plan format). Judgment produces a JSON change plan; `board check` shows the dry run and `board apply` writes it and reads back what landed.
+Every board write goes through `board` (`board --help` lists the commands, the plan format and the rules plans are checked against). Judgment produces a JSON change plan; `board check` shows the dry run and `board apply` writes it and reads back what landed.
 
-**Inputs:** the user's request, the board named in the board config (`board boards` lists them), and the board's snapshot (`board snapshot <board>`, at most 24 hours old; take a fresh one if it is older).
+**Inputs:** the user's request; the board config (`board boards`, or `board which` for the current repo's board, which `.` also names); the board's snapshot with its analysis notes (`board snapshot <board>`, refreshed automatically once older than a day); and, for each issue you change, a live read (`gh issue view`).
 
 ## Look first
 
-- `board search <owner> <words>` for duplicates, open and closed, before filing anything.
+- `board search <owner> <words>` for duplicates, open and closed, before filing anything. It searches titles live.
 - `board tree <board> <owner/repo#n>` for the workstream a new item will join, so it lands at the right level.
+- `board notes <board> <owner/repo#n>` for what earlier sessions concluded about an item. Notes marked STALE were written before the issue last changed: check them again before relying on them.
 
 ## File an issue
 
-Write a plan with one `create` op per issue and every field you can fill:
+One `create` op per issue, with every field you can fill. `board check` refuses a create that's missing a required field and names what's missing:
 
 - **Every issue:** Status, Priority, Theme, Complexity, and `type` (Task, Bug or Feature; a parent is Feature).
-- **Effort** on Tasks and Stories. **Category** on parents, from the board's hierarchy in the config.
-- **parent** for everything below the board's top level. Link a child only under a higher level.
-- **Status:** Todo when it is ready (required fields set, what done looks like stated in the body, no open decision); Backlog otherwise. Say in the body what keeps it in Backlog.
-- **Body:** what done looks like, and links to the evidence or discussion it came from. Refer to issues of another owner by full URL in a comment you post yourself, not in text the plan writes.
+- **Effort** on Tasks and Stories. **Category** on parents, from the board's hierarchy (`board boards`, then the config).
+- **parent** for everything below the board's top level, at a higher level than the new issue. Skipped levels are allowed; an upside-down link is refused.
+- **Status:** Todo when it's ready: required fields set, a "Done when:" line in the body, and no open decision. Backlog otherwise, with what keeps it there said in the body.
+- **Body:** what done looks like, and links to the evidence or discussion it came from. Mention issues of the same owner as `owner/repo#n`; an issue of another owner goes in a `relate` or `block` op, not in the text (the check refuses it).
+- **Work only a person can do:** assign that person with `gh issue edit <n> --repo <owner/repo> --add-assignee <login>`, so agents skip it.
 
 Use `"as": "name"` on a create and `"$name"` in later ops to build a parent and its children in one plan.
 
-## Change, claim, finish, close
+## Change, link, claim, finish, close
 
-- **Fields and links:** `set_field`, `clear_field`, `attach` (moves the child if it has a parent), `detach`, `set_type`, `label`.
-- **Claim:** `board claim <board> <owner/repo#n> --status-md STATUS.md` sets In Progress and adds the line to the STATUS.md of the repo that holds the issue. Commit that line with a `status:` prefix.
-- **Finish:** `board finish <board> <owner/repo#n> --close --status-md STATUS.md`. When a pull request closes the issue, let the merge close it instead and finish without `--close`.
+- **Fields and links:** `set_field`, `clear_field`, `attach` (moves the child if it has a parent), `detach`, `set_type`, `label`. Setting Category on a Task promotes it to Feature; clearing it demotes it back.
+- **Relationships:** `relate` / `unrelate` with `other`, and `block` / `unblock` with `by`. The other issue may belong to any owner; nothing moves between boards.
+- **Pull requests:** a pull request that closes no issue goes on the board with `add_pr`, which sets In Review.
+- **Claim:** `board claim <board> <owner/repo#n> --status-md STATUS.md`. It refuses an item that isn't open and at Todo or that someone else holds, sets In Progress, assigns you, and adds the line to the STATUS.md of the repo that holds the issue. Commit that line with a `status:` prefix.
+- **Finish:** after the pull request that closes the issue merges, `board finish <board> <owner/repo#n> --status-md STATUS.md`. It sets Done, or Pending Release on a board whose repos release by tag. For work with no pull request, add `--close`. When several pull requests deliver one issue, only the last says `closes #N`; the others say `refs #N`.
 - **Close:** `close` with `reason` completed, not_planned or duplicate (`duplicate_of` names the other issue). Read both bodies before closing one as a duplicate.
+- **Notes:** record a conclusion worth keeping with `board note <board> <owner/repo#n> <kind> <text>`, for example `duplicate-candidate`, `scope`, `suggested-parent` or `readiness`.
 
 ## Check, then apply
 
 1. `board check <board> plan.json` and read the dry run.
 2. If it prints **needs review**, show the user the dry run and wait for their go; then `board apply <board> plan.json --approved`.
 3. Otherwise `board apply <board> plan.json`.
-4. Report what landed from the read-back, with a link to each issue. Exit code 3 means something outside the plan also changed on a board (for example a sub-issue auto-add): report it.
+4. Report what landed from the read-back, with a link to each issue. Exit code 3 means something outside the plan also changed on a board, such as a sub-issue auto-add or a board workflow closing the finished issue: report it. Expected workflow effects can be named as such.

@@ -426,7 +426,7 @@ Three sections, all forward-pointing — no rolling history (git is the history)
 
 ## What's in progress
 (Issues currently claimed by an active session — see Concurrency & Claiming.
- Format: `- #N — <brief> (claimed YYYY-MM-DD by session <name>)`)
+ Format, as `board claim` writes it: `- [owner/repo#N](issue URL) <title> — claimed YYYY-MM-DD`)
 
 ## What's next
 (1–3 concrete next actions. Annotate each issue with `(P_, E_)` from the
@@ -515,14 +515,32 @@ Work only a person can do is assigned to that person; blocked work is marked wit
 
 ### The board command and skills
 
-Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences (owner, hierarchy, statuses, read-only) in `~/.config/board/boards.json`. Start from [`boards.example.json`](template/board/.config/board/boards.example.json).
+Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences in `~/.config/board/boards.json` (owner, hierarchy, statuses, the repos that feed it, whether they release by tag, read-only). Start from [`boards.example.json`](template/board/.config/board/boards.example.json); `provision.py` writes the entries for you.
 
-- **Reads** work from a local snapshot: `snapshot`, `tree`, `search`, `select`, `hygiene`.
+- **Reads** work from a snapshot of each board in `~/.local/state/board`: `snapshot`, `tree`, `select`, `hygiene`. A snapshot older than a day is pulled again on read, and a daily timer (`board-refresh.timer`, enabled by `setup.sh`) keeps them fresh. `search` is a live title search. Inside a repo, `.` names the repo's board.
 - **Writes** are JSON change plans: `check` prints the dry run, and `apply` writes the plan and reads back every write and every configured board. A plan that is hard to undo (close, reparent, change level or type, remove, edit options, cross owners, or touch many items) waits for `--approved`.
-- **Claims:** `claim` sets In Progress and adds the STATUS.md line; `finish` sets Done and removes it.
-- **Tests:** `python3 -m unittest discover -s tests/board` runs the offline suite against a made-up config.
+- **Rules** every plan is checked against:
+  - the required fields at create, and again before Todo, along with a "Done when:" line;
+  - no upside-down parent links;
+  - no mentions of another owner's issues in text it writes, since `relate` and `block` link across owners without writing into their timelines;
+  - promotion and demotion change the issue type with the level.
+- **Claims:** `claim` refuses an item that isn't open at Todo or that someone else holds, then sets In Progress, assigns you, and adds the STATUS.md line; `finish` sets Done (Pending Release on a tag-release board) and removes it.
+- **Hygiene** reports:
+  - missing required fields;
+  - stale claims;
+  - orphans and level problems;
+  - Status that disagrees with the issue's state;
+  - linked pull requests that disagree with In Review;
+  - issues closed while a closing pull request is still open;
+  - open pull requests that close no issue and aren't on the board.
+- **Analysis notes:** `note` appends a finding to an item's record (kind, text, who, when, and the issue's `updatedAt` at the time); `notes` reads them back, marking any written before the issue last changed. A refresh keeps them.
+- **Pull requests and releases:**
+  - `add_pr` puts a pull request that closes no issue on the board at In Review.
+  - [`template/repo/.github/workflows/board.yml`](template/repo/.github/workflows/board.yml) runs `board guard` when a pull request merges, which reopens an issue another open pull request still closes.
+  - On a tag-release repo, the same workflow runs `board release` when a release is published, which moves released items from Pending Release to Done.
+- **Tests:** `python3 -m unittest discover -s tests/board` runs the offline suite against a made-up config; [`tests/board/live_fixture.py`](tests/board/live_fixture.py) runs the commands against a real board's labelled test fixture.
 
-Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema.
+Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, links, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema.
 
 ### Hierarchy via Category + sub-issues
 
@@ -609,8 +627,8 @@ The session adds the issue to its repo's `STATUS.md` under a "What's in progress
 ```markdown
 ## What's in progress
 
-- #176 — /theme-operator Audit-Reconcile (claimed 2026-05-28 by session `substrate`)
-- #180 — issue-reviewer PR-title citations (claimed 2026-05-28 by session `accounting`)
+- [acme/planning#176](https://github.com/acme/planning/issues/176) Audit-Reconcile — claimed 2026-05-28
+- [acme/planning#180](https://github.com/acme/planning/issues/180) PR-title citations — claimed 2026-05-28
 ```
 
 When the work lands (PR merged, issue closed), the session moves the entry from "What's in progress" to "What just happened" and commits.

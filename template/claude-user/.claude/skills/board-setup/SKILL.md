@@ -1,18 +1,33 @@
 ---
 name: board-setup
-description: Set up a GitHub project board for the operating model — create or copy it from a template, set the fields and statuses, turn on the built-in workflows, link its repos, and add it to the `board` config. Use when the user asks to create, copy or configure a project board, set up a board for a new product, or check that a board matches the guide's schema.
+description: Set up a GitHub project board for the operating model — create or copy it from a template, set the fields and statuses, turn on the built-in workflows, link its repos, add it to the `board` config, and add the board automation workflow to its repos. Use when the user asks to create, copy or configure a project board, set up a board for a new product, or check that a board matches the guide's schema.
 ---
 
 # board-setup
 
-**Inputs:** the owner (organization or user), the template to copy if there is one, the repos that feed the board, and the board config at `~/.config/board/boards.json` (copy `boards.example.json` beside it on first use).
+For a whole setup (organizations, repos and boards from a config file), run the guide's `provision.py` and use this skill for what it reports and for one-off boards.
+
+**Inputs:** the owner (organization or user), the template to copy, the repos that feed the board, whether those repos release by tag, and the board config at `~/.config/board/boards.json`.
 
 ## 1. Create or copy
 
 - Copy a template with `copyProjectV2` (`gh api graphql`), or from the template's page in the web UI. The copy keeps fields, views and workflows except "Auto-add to project"; items don't copy.
 - Link each repo: `linkProjectV2ToRepository`.
 
-## 2. Fields
+## 2. Config
+
+Add the board to `boards.json` so `board` can work on it:
+
+- `owner`, `owner_type` (`organization` or `user`), `number`.
+- `repos`: the repos that feed it, so `board .` and `board which` find it from inside a repo.
+- `hierarchy`: the Category levels, top first; `outside_hierarchy` for levels off the ladder.
+- `release`: `none`, or `tags` when its repos release by tag.
+- `statuses`, only to rename one (for example `{"done": "Shipped"}`); the rest keep their defaults.
+- `read_only: true` for a board agents may only read.
+
+Delete any example boards you don't use: `apply` and `claim` read back every configured board, and a placeholder makes them fail. Then `board fields <board>` and `board snapshot <board>` to confirm the command can read it.
+
+## 3. Fields
 
 | Field | Options |
 |---|---|
@@ -23,27 +38,27 @@ description: Set up a GitHub project board for the operating model — create or
 | Theme | the board's own areas; a product board gets the product's, a company board its functions |
 | Category | the hierarchy levels above Task, for example Milestone, Epic, User Story |
 
-Add missing options with a `board` plan (`add_options`), which keeps every existing option and its id. When you call `updateProjectV2Field` yourself, send each kept option with its `id`: an option sent without one is recreated and the items set to it are cleared.
+Create a missing field with `createProjectV2Field` (`gh api graphql`). Add missing options with a `board` plan (`add_options`), which keeps every existing option and its id. When you call `updateProjectV2Field` yourself, for example to drop the templates' `Placeholder` Theme once real Themes exist, send each kept option with its `id`: an option sent without one is recreated and the items set to it are cleared.
 
-## 3. Workflows (web UI only)
+## 4. Workflows (web UI only)
 
 The API can read workflows but not create or enable them. Open the board's menu → Workflows and set:
 
-- Item closed → Done (Pending Release on a board whose repos release by tag)
+- Item closed → Done, or Pending Release on a board whose repos release by tag
 - Item reopened → In Progress
 - Pull request linked to issue → In Review
 - Pull request merged → Done
 - Auto-close issue: on
-- Item added to project: issues only → Backlog
+- Item added to project: issues only → Backlog (`board` re-sets a Status a plan gave after this fires)
 - Auto-add sub-issues to project: on
-- Auto-add to project: one per repo, filtered to `is:issue` (the Free plan allows one per board)
+- Auto-add to project: filtered to `is:issue`, one per repo (the Free plan allows one per board; add other repos' issues yourself)
 
 Read them back afterwards: `gh api graphql` on the project's `workflows { nodes { name enabled } }`.
 
-## 4. Config
+## 5. Repo automation
 
-Add the board to `boards.json`: `owner`, `owner_type`, `number`, `hierarchy` (Category levels, top first), `outside_hierarchy`, and `read_only` for a board agents may only read. Then `board fields <board>` and `board snapshot <board>` to confirm the command can read it.
+Copy the guide's `template/repo/.github/workflows/board.yml` into each repo. It reopens an issue another open pull request still closes when one merges (`board guard`) and, on a published release, moves released items to Done (`board release`). Its header lists the secret and variables the repo needs; setting the secret is the user's to do.
 
-## 5. Report
+## 6. Report
 
-List what was set, what needs the web UI, and the board's URL.
+List what was set, what needs the web UI or a secret, and the board's URL.

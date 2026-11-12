@@ -23,14 +23,24 @@ WORK = BOARDS["company"]
 OPTS = lambda *names: [{"id": f"id-{n}", "name": n, "color": "GRAY", "description": ""} for n in names]
 
 
-def item(ref, title="x", status="Todo", state="OPEN", typ=None, parent=None, children=(), labels=(),
-         created="2026-01-01T00:00:00Z", updated=None, **fields):
+UNSET = object()
+
+
+def item(ref, title="x", status="Todo", state="OPEN", typ=UNSET, parent=None, children=(), labels=(),
+         created="2026-01-01T00:00:00Z", updated=None, assignees=(), blocked_by=(), prs=(), **fields):
+    """A snapshot item. Theme and Complexity default to set, and the type to Feature for an item with
+    a Category and Task otherwise, so tests name only the fields they are about."""
     f = {"Status": status} if status else {}
+    f.update({"Theme": "Placeholder", "Complexity": "Low"})
     f.update({k.replace("_", " "): v for k, v in fields.items()})
+    f = {k: v for k, v in f.items() if v is not None}
+    if typ is UNSET:
+        typ = "Feature" if f.get("Category") else "Task"
     return {"item_id": "PVTI_" + ref, "kind": "ISSUE", "archived": False, "title": title, "fields": f,
             "ref": ref, "issue_id": "I_" + ref, "state": state, "state_reason": None, "created": created,
             "updated": updated or created, "url": "https://github.com/" + ref.replace("#", "/issues/"),
-            "issue_type": typ, "labels": list(labels), "parent": parent, "children": list(children)}
+            "issue_type": typ, "labels": list(labels), "parent": parent, "children": list(children),
+            "assignees": list(assignees), "blocked_by": list(blocked_by), "prs": list(prs)}
 
 
 def snap(*items):
@@ -40,8 +50,14 @@ def snap(*items):
                        "Effort": {"id": "F3", "type": "NUMBER"},
                        "Category": {"id": "F4", "type": "SINGLE_SELECT", "options": OPTS("Epic", "User Story")},
                        "Theme": {"id": "F5", "type": "SINGLE_SELECT", "options": OPTS("Placeholder")},
+                       "Complexity": {"id": "F6", "type": "SINGLE_SELECT", "options": OPTS("Trivial", "Low", "Medium", "Medium-High", "High")},
                        "Target Org": {"id": "F7", "type": "SINGLE_SELECT", "options": OPTS("Acme", "globex")}},
             "items": list(items)}
+
+
+# A create with every required field, as a leaf under the User Story acme-co/ops#2.
+FULL = {"type": "Task", "parent": "acme-co/ops#2", "fields": {"Status": "Backlog", "Priority": "P2", "Theme": "Placeholder",
+                                                             "Complexity": "Low", "Effort": 1}}
 
 
 def no_lookup(ref):
@@ -174,7 +190,7 @@ class PlanChecks(unittest.TestCase):
         with self.assertRaisesRegex(board.BoardError, "no issue type 'Epic'"):
             board.check_plan(WORK, self.s, [{"op": "set_type", "item": "acme-co/ops#6", "type": "Epic"}], no_lookup, repo)
         with self.assertRaisesRegex(board.BoardError, r"no label \['nope'\]"):
-            board.check_plan(WORK, self.s, [{"op": "create", "repo": "acme-co/ops", "title": "t", "labels": ["nope"]}], no_lookup, repo)
+            board.check_plan(WORK, self.s, [dict(FULL, op="create", repo="acme-co/ops", title="t", labels=["nope"])], no_lookup, repo)
 
     def test_fixture_label_change_is_reviewed(self):
         _, reasons = self.check([{"op": "label", "item": "acme-co/ops#6", "remove": ["test-fixture"]}])
@@ -186,9 +202,9 @@ class PlanChecks(unittest.TestCase):
         self.assertEqual(reasons, ["op 1: close"])
 
     def test_creates_count_toward_size(self):
-        plan = [{"op": "create", "repo": "acme-co/ops", "title": f"t{n}"} for n in range(11)]
+        plan = [dict(FULL, op="create", repo="acme-co/ops", title=f"t{n}") for n in range(11)]
         _, reasons = self.check(plan)
-        self.assertIn("touches 11 items (over 10)", reasons)
+        self.assertIn("touches 12 items (over 10)", reasons)  # 11 creates and their parent
 
     def test_duplicate_close_inputs_must_agree(self):
         for op in ({"op": "close", "item": "acme-co/ops#2", "reason": "completed", "duplicate_of": "acme-co/ops#1"},
@@ -208,22 +224,29 @@ class PlanChecks(unittest.TestCase):
 
 class Selection(unittest.TestCase):
     def test_order_and_skips(self):
-        s = snap(item("o/r#1", Priority="P2", Effort=1, created="2026-01-01T00:00:00Z"),
-                 item("o/r#2", Priority="P1", Effort=5),
-                 item("o/r#3", Priority="P1", Effort=2),
-                 item("o/r#4", Priority="P1", Effort=2, created="2025-12-01T00:00:00Z"),
-                 item("o/r#5", Priority="P0"),                                   # no Effort
-                 item("o/r#6", Priority="P0", Effort=1, status="Backlog"),
-                 item("o/r#7", title="[Test fixture] x", Priority="P0", Effort=1, labels=["test-fixture"]),
-                 item("o/r#8", Priority="P0", Effort=1),                          # claimed
-                 item("o/r#9", Priority="P0", Effort=1, state="CLOSED"),
-                 item("x/y#1", Priority="P0", Effort=1))
-        picks, skipped = board.select(WORK, s, repo="o/r", count=10, claimed=lambda repo: {"o/r#8"})
+        P = "o/r#100"
+        s = snap(item("o/r#1", Priority="P2", Effort=1, parent=P, created="2026-01-01T00:00:00Z"),
+                 item("o/r#2", Priority="P1", Effort=5, parent=P),
+                 item("o/r#3", Priority="P1", Effort=2, parent=P),
+                 item("o/r#4", Priority="P1", Effort=2, parent=P, created="2025-12-01T00:00:00Z"),
+                 item("o/r#5", Priority="P0", parent=P),                                   # no Effort
+                 item("o/r#6", Priority="P0", Effort=1, parent=P, status="Backlog"),
+                 item("o/r#7", title="[Test fixture] x", Priority="P0", Effort=1, parent=P, labels=["test-fixture"]),
+                 item("o/r#8", Priority="P0", Effort=1, parent=P),                          # claimed
+                 item("o/r#9", Priority="P0", Effort=1, parent=P, state="CLOSED"),
+                 item("o/r#10", Priority="P0", Effort=1, parent=P, assignees=["someone"]),
+                 item("o/r#11", Priority="P0", Effort=1, parent=P, blocked_by=["o/r#12"]),
+                 item("o/r#13", Priority="P0", Effort=1, Theme=None, Complexity=None),     # no parent, Theme, Complexity
+                 item("x/y#1", Priority="P0", Effort=1, parent=P))
+        picks, skipped = board.select(WORK, s, repo="o/r", count=20, claimed=lambda repo: {"o/r#8"})
         self.assertEqual([e["ref"] for e in picks], ["o/r#4", "o/r#3", "o/r#2", "o/r#1"])
-        self.assertEqual(dict(skipped), {"o/r#5": "missing Priority or Effort", "o/r#8": "claimed in STATUS.md"})
+        self.assertEqual(dict(skipped), {"o/r#5": "needs grooming: no Effort", "o/r#8": "claimed in STATUS.md",
+                                         "o/r#10": "assigned to someone", "o/r#11": "blocked by o/r#12",
+                                         "o/r#13": "needs grooming: no Theme, Complexity, parent link"})
 
     def test_label_filter(self):
-        s = snap(item("o/r#1", Priority="P1", Effort=1, labels=["ops:pipeline"]), item("o/r#2", Priority="P0", Effort=1))
+        s = snap(item("o/r#1", Priority="P1", Effort=1, parent="o/r#9", labels=["ops:pipeline"]),
+                 item("o/r#2", Priority="P0", Effort=1, parent="o/r#9"))
         picks, _ = board.select(WORK, s, label="ops:pipeline", claimed=lambda r: set())
         self.assertEqual([e["ref"] for e in picks], ["o/r#1"])
 
@@ -251,7 +274,8 @@ class Hygiene(unittest.TestCase):
                 ("level", "acme-co/ops#5", "has Category 'User Story' and type 'Task'"),
                 ("level", "acme-co/ops#5", "User Story under Task acme-co/ops#3 (not lower)"),
                 ("cross-owner", "jdoe/tasks#1", "issue from another owner on the company board"),
-                ("missing", "acme-co/ops#9", "sub-issue of acme-co/ops#1 but not on the board")}
+                ("missing", "acme-co/ops#9", "sub-issue of acme-co/ops#1 but not on the board"),
+                ("missing", "acme-co/ops#1", "no assignee")}
         self.assertEqual(got, want)
 
     def test_fixture_included_on_request(self):
