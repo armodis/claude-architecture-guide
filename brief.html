@@ -482,18 +482,20 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
       <h2>Portfolio Mgmt</h2>
       <p class="lede">The shared state plane, made concrete. A single <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects">GitHub Projects</a> board tracks work across all your repos — <span class="mono">app · infra · automation · planning · site</span>. It's the task graph agents claim from, audit, and sync against.</p>
 
-      <div class="note"><b>Copy a ready-made board.</b> Both boards below are GitHub Projects templates — open one and hit <b>Copy</b> to start pre-wired with the fields and lifecycle in this panel:
+      <div class="note"><b>Copy a ready-made board.</b> The boards below are public GitHub Projects templates — open one and hit <b>Copy</b> to start pre-wired with the fields and lifecycle in this panel:
         <div class="tmpl">
           <a href="https://github.com/orgs/armodis-ai/projects/6">◆ Strategic Portfolio →</a>
+          <a href="https://github.com/orgs/armodis-ai/projects/9">◆ Product Roadmap →</a>
           <a href="https://github.com/orgs/armodis-ai/projects/7">◆ Personal Task Mgmt →</a>
         </div>
-        No org of your own? Build it from the fields below by hand.</div>
+        <code>provision.py</code> copies them for every board in your <code>github.json</code>; without an org of your own, build one from the fields below by hand.</div>
 
       <h3>Status lifecycle</h3>
       <div class="stepper">
-        <span class="step">Todo</span><span class="arw">→</span>
         <span class="step">Backlog</span><span class="arw">→</span>
+        <span class="step">Todo</span><span class="arw">→</span>
         <span class="step lock">In Progress</span><span class="arw">→</span>
+        <span class="step">In Review</span><span class="arw">→</span>
         <span class="step">Pending Release</span><span class="arw">→</span>
         <span class="step done">Done</span>
       </div>
@@ -525,8 +527,10 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
           <li><span class="r">Status</span><span class="d">the lifecycle above</span></li>
           <li><span class="r">Theme</span><span class="d">one of your pillars</span></li>
           <li><span class="r">Category</span><span class="d">the hierarchy level</span></li>
+          <li><span class="r">Effort</span><span class="d">1 · 2 · 3 · 5 · 8, the amount of work</span></li>
+          <li><span class="r">Complexity</span><span class="d">Trivial – High, how hard it is</span></li>
         </ul>
-        <p class="prose" style="font-size:0.8rem; margin:0.8rem 0 0">Plus Effort, Iteration, Rank, WBS, Quarter, Business Value… (all standard <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects/understanding-fields/about-custom-fields">GitHub Projects custom fields</a>). <span style="color:var(--warn)">Iteration IDs are dynamic — always discover them live, never hardcode.</span></p>
+        <p class="prose" style="font-size:0.8rem; margin:0.8rem 0 0">Plus Iteration, Rank, WBS, Quarter, Business Value… (all standard <a href="https://docs.github.com/en/issues/planning-and-tracking-with-projects/understanding-fields/about-custom-fields">GitHub Projects custom fields</a>). <span style="color:var(--warn)">Iteration IDs are dynamic — always discover them live, never hardcode.</span></p>
       </div>
 
       <h3>What keeps it in sync</h3>
@@ -548,7 +552,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
       <div class="agents" style="margin-top:0.9rem">
         <span class="agent">/pickup</span><span class="agent">/create-issue</span><span class="agent">/sync</span><span class="agent">…your own</span>
       </div>
-      <p class="prose" style="font-size:0.82rem; margin-top:0.6rem">The template ships <em>no</em> skills — you author the few your workflow needs (a smart Claude session will draft them with you). The board model above is what they operate on.</p>
+      <p class="prose" style="font-size:0.82rem; margin-top:0.6rem">The template ships the operating skills — the design loop, and the <code>board</code> command with its <code>item</code>, <code>pickup</code> and <code>board-setup</code> skills — and you author the skills specific to your work with them. The board model above is what they operate on.</p>
 
       <div class="note"><b>Personal analog.</b> <code>~/personal/task-mgmt</code> mirrors this exact model against a second GitHub Projects board — same claim lock, selection policy, and <code>task-mgmt:*</code> function labels.</div>
 

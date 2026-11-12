@@ -105,10 +105,11 @@ def report(run):
     steps = [r for r in log if r[1] != CLOSED]
     if not steps:
         sys.exit(f"no steps marked in {run}/cost-log.tsv")
-    closed = next((ts for ts, step, _ in log if step == CLOSED), None)
-    end = closed or now()
-    windows = [(ts, steps[i + 1][0] if i + 1 < len(steps) else end, step)
-               for i, (ts, step, _) in enumerate(steps)]
+    # Each step runs until the next mark of any kind. A step marked after `closed` reopens the
+    # run, so the run ends at the last mark only when that mark is `closed`.
+    marks = sorted(log, key=lambda r: r[0])
+    windows = [(ts, marks[i + 1][0] if i + 1 < len(marks) else now(), step)
+               for i, (ts, step, _) in enumerate(marks) if step != CLOSED]
 
     first_mark = {}
     for ts, _, sid in log:
