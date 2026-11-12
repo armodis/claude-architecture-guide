@@ -14,7 +14,7 @@ The fastest way to adopt this is to let a Claude Code session drive. Open Claude
 
 > Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
-The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, starting with the [design loop](#the-design-loop); the agent authors the skills specific to your work with you.
+The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and the [board checklist](#setting-up-the-project-board-optional) below is a `gh`-driven runbook it can execute. The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
 
 **Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and `gh` authenticated (only for the board workflow).
 
@@ -43,6 +43,7 @@ $EDITOR setup.sh      # edit the CONFIG block: DOMAINS=(work personal ...)
 What ships alongside this guide:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
+- **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`) and an example board config (into `~/.config/board/`).
 - **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots).
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
@@ -511,6 +512,17 @@ Work only a person can do is assigned to that person; blocked work is marked wit
 - **Optional:** dates, Team.
 
 **Done and releases.** In a repo with no release process, a merged closing pull request means Done. In a repo that releases by tag, the issue still closes on merge, but that board's "Item closed" workflow sets Pending Release instead of Done, and a release workflow moves released items to Done. When several pull requests close one issue, it stays open until the last one merges. The release workflow needs a GitHub App credential: the default `GITHUB_TOKEN` can't write to Projects.
+
+### The board command and skills
+
+Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences (owner, hierarchy, statuses, read-only) in `~/.config/board/boards.json`. Start from [`boards.example.json`](template/board/.config/board/boards.example.json).
+
+- **Reads** work from a local snapshot: `snapshot`, `tree`, `search`, `select`, `hygiene`.
+- **Writes** are JSON change plans: `check` prints the dry run, and `apply` writes the plan and reads back every write and every configured board. A plan that is hard to undo (close, reparent, change level or type, remove, edit options, cross owners, or touch many items) waits for `--approved`.
+- **Claims:** `claim` sets In Progress and adds the STATUS.md line; `finish` sets Done and removes it.
+- **Tests:** `python3 -m unittest discover -s tests/board` runs the offline suite against a made-up config.
+
+Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema.
 
 ### Hierarchy via Category + sub-issues
 

@@ -1,0 +1,71 @@
+{
+  "defaults": {
+    "statuses": {
+      "select": "Todo",
+      "claim": "In Progress",
+      "done": "Done"
+    },
+    "leaf_type": "Task",
+    "fixture": {
+      "label": "test-fixture",
+      "title_prefix": "[Test fixture]",
+      "clear": [
+        "Priority",
+        "Effort",
+        "Source Org",
+        "Target Org"
+      ]
+    },
+    "stale_days": 7,
+    "review_over_items": 10
+  },
+  "boards": {
+    "company": {
+      "owner": "acme-co",
+      "owner_type": "organization",
+      "number": 1,
+      "org_label": "Acme",
+      "fixture_rest": {
+        "Status": "Backlog"
+      },
+      "hierarchy": [
+        "Objective",
+        "Key Result",
+        "Initiative",
+        "Milestone",
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": []
+    },
+    "globex": {
+      "owner": "globex",
+      "owner_type": "organization",
+      "number": 1,
+      "org_label": "Globex",
+      "hierarchy": [
+        "Objective",
+        "Key Result",
+        "Initiative",
+        "Milestone",
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": [],
+      "read_only": true
+    },
+    "personal": {
+      "owner": "jdoe",
+      "owner_type": "user",
+      "number": 1,
+      "fixture_rest": {
+        "Status": "Backlog"
+      },
+      "hierarchy": [
+        "Epic",
+        "User Story"
+      ],
+      "outside_hierarchy": []
+    }
+  }
+}
