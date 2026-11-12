@@ -1,8 +1,10 @@
 # Board automation for this repo, from the architecture guide.
 #
 #   - When a pull request merges: GitHub closes each issue it names with a closing keyword, even
-#     when another open pull request closes the same issue. `board guard` reopens such an issue,
-#     says why, and sets it back to In Review.
+#     when another open pull request closes the same issue, and the board's "Item closed"
+#     workflow sets Done. `board guard` keeps the board Status right: In Review while another
+#     closing pull request is open, then Done (Pending Release on a tag-release board) once the
+#     last one merges. The issue itself stays closed.
 #   - When a release is published (repos that release by tag): `board release` moves this repo's
 #     Pending Release items whose merged pull requests are in the tag to Done.
 #
@@ -14,7 +16,8 @@
 #     with this repo listed in its board's "repos".
 #   - variable BOARD_REF (optional): the guide commit to take the board command from; pin a
 #     commit SHA. Defaults to main.
-# Without BOARD_TOKEN the job skips.
+# Without BOARD_TOKEN the job skips. Pull requests from forks and Dependabot get no secrets, so
+# their merges skip too; run `board guard owner/repo#N` by hand for those.
 name: board
 
 on:
@@ -34,6 +37,9 @@ jobs:
       GH_TOKEN: ${{ secrets.BOARD_TOKEN }}
       BOARD_CONFIG: ${{ github.workspace }}/.board.json
       BOARD_REF: ${{ vars.BOARD_REF || 'main' }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TAG: ${{ github.event.release.tag_name }}
     steps:
       - name: Skip without a token
         if: env.GH_TOKEN == ''
@@ -49,11 +55,11 @@ jobs:
       - name: Guard issues other pull requests still close
         if: env.GH_TOKEN != '' && github.event_name == 'pull_request'
         run: |
-          rc=0; "$RUNNER_TEMP/board" guard "${{ github.repository }}#${{ github.event.pull_request.number }}" || rc=$?
+          rc=0; "$RUNNER_TEMP/board" guard "$REPO#$PR_NUMBER" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
       - name: Move released items to Done
         if: env.GH_TOKEN != '' && github.event_name == 'release'
         run: |
-          board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "${{ github.repository }}")
-          rc=0; "$RUNNER_TEMP/board" release "$board_name" "${{ github.repository }}" "${{ github.event.release.tag_name }}" || rc=$?
+          board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "$REPO")
+          rc=0; "$RUNNER_TEMP/board" release "$board_name" "$REPO" "$TAG" || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]

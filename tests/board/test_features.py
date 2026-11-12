@@ -67,6 +67,18 @@ class RequiredFields(unittest.TestCase):
             check(fixed, s=s, body_of=lambda r: "no marker here")
         check(fixed, s=s, body_of=lambda r: "## Done when\nIt works.")
 
+    def test_parent_and_type_set_earlier_in_the_plan_count_for_todo(self):
+        s = tree_snap(item("acme-co/ops#4", status="Backlog", typ=None, Priority="P1", Effort=1))  # no parent, no type
+        check([{"op": "set_type", "item": "acme-co/ops#4", "type": "Task"},
+               {"op": "attach", "parent": "acme-co/ops#2", "child": "acme-co/ops#4"},
+               {"op": "set_field", "item": "acme-co/ops#4", "field": "Status", "value": "Todo"}],
+              s=s, body_of=lambda r: "Done when: it works")
+
+    def test_what_done_looks_like_heading_counts(self):
+        self.assertTrue(board.has_done_marker(WORK, "## What done looks like\nThe export runs."))
+        self.assertTrue(board.has_done_marker(WORK, "**Done when:** x"))
+        self.assertFalse(board.has_done_marker(WORK, "We are done with this when it works"))
+
     def test_fixture_creates_are_exempt(self):
         check([{"op": "create", "repo": "acme-co/ops", "title": "[Test fixture] t", "labels": ["test-fixture"]}])
 
@@ -96,13 +108,19 @@ class Hierarchy(unittest.TestCase):
             check([dict(FULL, op="create", repo="acme-co/ops", title="t", parent="acme-co/ops#3")])
 
     def test_promotion_sets_the_parent_type_and_demotion_the_leaf_type(self):
-        steps, _ = check([{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"}])
-        self.assertEqual([(op["op"], op.get("type")) for _, op, _ in steps], [("set_field", None), ("set_type", "Feature")])
+        promote = [{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"},
+                   {"op": "attach", "parent": "acme-co/ops#1", "child": "acme-co/ops#3"}]
+        steps, _ = check(promote)
+        self.assertEqual([(op["op"], op.get("type")) for _, op, _ in steps],
+                         [("set_field", None), ("set_type", "Feature"), ("attach", None)])
+        with self.assertRaisesRegex(board.BoardError, "same or a lower"):
+            check(promote[:1])  # a User Story left under a User Story
         steps, _ = check([{"op": "clear_field", "item": "acme-co/ops#2", "field": "Category"}])
         self.assertEqual([op.get("type") for _, op, _ in steps], [None, "Task"])
         steps, _ = check([{"op": "set_field", "item": "acme-co/ops#3", "field": "Category", "value": "User Story"},
-                          {"op": "set_type", "item": "acme-co/ops#3", "type": "Bug"}])
-        self.assertEqual(len(steps), 2, "a plan that sets the type itself gets no implied op")
+                          {"op": "set_type", "item": "acme-co/ops#3", "type": "Bug"},
+                          {"op": "attach", "parent": "acme-co/ops#1", "child": "acme-co/ops#3"}])
+        self.assertEqual(len(steps), 3, "a plan that sets the type itself gets no implied op")
 
 
 class MentionsAndLinks(unittest.TestCase):
@@ -164,7 +182,11 @@ class PullRequestHygiene(unittest.TestCase):
     def test_closed_with_an_open_pull_request(self):
         s = tree_snap(item("acme-co/ops#4", status="Done", state="CLOSED", parent="acme-co/ops#2",
                            prs=[{"ref": "acme-co/ops#41", "state": "OPEN", "merged": False}]))
-        self.assertIn(("pull request", "acme-co/ops#4", "closed while acme-co/ops#41 is still open"), self.kinds(s))
+        self.assertIn(("pull request", "acme-co/ops#4", "closed while acme-co/ops#41 is still open, but Status is 'Done', not 'In Review'"),
+                      self.kinds(s))
+        ok = tree_snap(item("acme-co/ops#4", status="In Review", state="CLOSED", parent="acme-co/ops#2",
+                            prs=[{"ref": "acme-co/ops#41", "state": "OPEN", "merged": False}]))
+        self.assertEqual({x for x in self.kinds(ok) if x[1] == "acme-co/ops#4"}, set(), "closed at In Review is expected")
 
     def test_pending_release_rules_follow_the_release_setting(self):
         s = tree_snap(item("acme-co/ops#4", status="Pending Release", state="CLOSED", parent="acme-co/ops#2"))
@@ -192,7 +214,7 @@ class Release(unittest.TestCase):
         board.pull, board.apply_plan = self.saved
 
     def test_items_move_to_done_only_when_every_merged_pr_is_in_the_tag(self):
-        merged = lambda oid: {"ref": "x", "state": "MERGED", "merged": True, "merge_oid": oid}
+        merged = lambda oid: {"ref": "acme-co/ops#90", "state": "MERGED", "merged": True, "merge_oid": oid}
         s = tree_snap(item("acme-co/ops#4", status="Pending Release", state="CLOSED", prs=[merged("a1")]),
                       item("acme-co/ops#5", status="Pending Release", state="CLOSED", prs=[merged("a1"), merged("b2")]),
                       item("acme-co/web#6", status="Pending Release", state="CLOSED", prs=[merged("a1")]))
@@ -204,26 +226,33 @@ class Release(unittest.TestCase):
 
 
 class Guard(unittest.TestCase):
-    def test_issue_closed_by_one_of_several_prs_is_reopened_and_set_to_review(self):
-        calls, plans = [], []
+    def run_guard(self, issue_status, open_prs, board_cfg=None):
+        plans = []
 
         class GH:
             def pr(self, ref):
                 return dict(id="PR", owner="acme-co", state="MERGED", merged=True, url="u",
-                            closes=[dict(id="I4", ref="acme-co/ops#4", state="CLOSED", open_prs=["acme-co/ops#41"]),
-                                    dict(id="I5", ref="acme-co/ops#5", state="CLOSED", open_prs=[])])
+                            closes=[dict(id="I4", ref="acme-co/ops#4", state="CLOSED", open_prs=open_prs)])
+        b = board_cfg or WORK
         saved = board.gql, board.pull, board.apply_plan
-        board.gql = lambda q, **v: calls.append((q.split("(")[0].split("{")[-1].strip(), v.get("i"))) or {}
-        board.pull = lambda b, write=True: tree_snap(item("acme-co/ops#4", status="Done", state="CLOSED"))
-        board.apply_plan = lambda b, boards, plan, **kw: plans.append((b["name"], plan)) or board.APPLIED
+        board.gql = lambda q, **v: (_ for _ in ()).throw(AssertionError("no direct GitHub writes"))
+        board.pull = lambda bb, write=True: tree_snap(item("acme-co/ops#4", status=issue_status, state="CLOSED"))
+        board.apply_plan = lambda bb, boards, plan, **kw: plans.append(plan) or board.APPLIED
         try:
-            board.guard({"company": WORK}, "acme-co/ops#40", gh=GH(), log=lambda *_: None)
+            board.guard({"company": b}, "acme-co/ops#40", gh=GH(), log=lambda *_: None)
         finally:
             board.gql, board.pull, board.apply_plan = saved
-        self.assertEqual(len([c for c in calls if c[1] == "I4"]), 2, "reopen and comment")
-        self.assertFalse([c for c in calls if c[1] == "I5"])
-        self.assertEqual(plans, [("company", [{"op": "set_field", "item": "acme-co/ops#4", "field": "Status",
-                                               "value": "In Review"}])])
+        return [op["value"] for p in plans for op in p]
+
+    def test_another_open_pr_keeps_the_issue_in_review_without_reopening(self):
+        self.assertEqual(self.run_guard("Done", ["acme-co/ops#41"]), ["In Review"])
+
+    def test_the_last_merge_sets_done_or_pending_release(self):
+        self.assertEqual(self.run_guard("In Review", []), ["Done"])
+        self.assertEqual(self.run_guard("In Review", [], dict(WORK, release="tags")), ["Pending Release"])
+
+    def test_nothing_to_do_when_status_is_already_right(self):
+        self.assertEqual(self.run_guard("Done", []), [])
 
 
 class StateFolder(unittest.TestCase):
