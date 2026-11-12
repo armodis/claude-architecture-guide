@@ -12,11 +12,11 @@
 
 The fastest way to adopt this is to let a Claude Code session drive. Open Claude Code (terminal, or [claude.ai/code](https://claude.ai/code) on the web) and paste:
 
-> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and (optionally) the project **board**. Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
+> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and the **GitHub side** (organizations, repos and project boards). Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
 The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and [`provision.py`](provision.py) puts the GitHub side in place: organizations, repos, project boards and the board config ([Setting up GitHub](#setting-up-github)). The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
 
-**Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), and [`gh`](https://cli.github.com/) logged in with the `repo`, `project` and `read:org` scopes (`gh auth login`, then `gh auth refresh -s project,read:org`).
+**Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), Python 3, `git` with `user.name` and `user.email` set, and [`gh`](https://cli.github.com/) logged in with the `repo`, `project` and `read:org` scopes (`gh auth login`, then `gh auth refresh -s project,read:org`).
 
 ***
 

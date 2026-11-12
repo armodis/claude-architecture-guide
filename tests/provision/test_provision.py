@@ -23,16 +23,16 @@ class FakeGH:
         self.writes = []
 
     def graphql(self, q, **v):
+        if "repositoryOwner" in q and "projectsV2" in q:
+            # GitHub's query matches loosely; provision.py keeps exact titles only
+            nodes = [{"id": b["id"], "number": b["number"], "title": b["title"], "url": f"https://x/{b['number']}", "closed": False}
+                     for b in self.boards.get(v["l"], []) if v["t"].split()[0].lower() in b["title"].lower()]
+            return {"repositoryOwner": {"projectsV2": {"nodes": nodes}}}
         if "repositoryOwner" in q:
             t = self.owners.get(v["l"])
             if not t:
                 return {"repositoryOwner": None}
-            nodes = [{"id": b["id"], "number": b["number"], "title": b["title"], "url": f"https://x/{b['number']}", "closed": False}
-                     for b in self.boards.get(v["l"], [])]
-            return {"repositoryOwner": {"__typename": t, "id": f"O_{v['l']}", "login": v["l"], "projectsV2": {"nodes": nodes}}}
-        if "repository(owner" in q:
-            full = f"{v['o']}/{v['n']}"
-            return {"repository": {"id": f"R_{full}"} if full in self.repos else None}
+            return {"repositoryOwner": {"__typename": t, "id": f"O_{v['l']}", "login": v["l"]}}
         if "projectV2(number" in q:
             return {"organization": {"projectV2": {"id": "T_1", "title": "[TEMPLATE] x", "template": True}}}
         if "copyProjectV2" in q:
@@ -51,20 +51,37 @@ class FakeGH:
                              "workflows": {"nodes": self.workflows}, "fields": {"nodes": fields}}}
         if "linkProjectV2ToRepository" in q:
             self.writes.append(("link", v["p"], v["r"]))
+            self.board_by_id(v["p"])["repos"].append(v["r"][2:])
             return {}
         if "updateProjectV2Field" in q:
             self.writes.append(("options", v["f"], v["o"]))
+            for bs in self.boards.values():
+                for b in bs:
+                    if v["f"] == "F_theme":
+                        b["themes"] = [o["name"] for o in v["o"]]
             return {}
         raise AssertionError(f"unexpected query: {q[:60]}")
 
+    def board_by_id(self, pid):
+        return next(b for bs in self.boards.values() for b in bs if b["id"] == pid)
+
     def rest(self, path):
-        _, owner, name, _, label = path.split("/")
+        parts = path.split("/")
+        if len(parts) == 3:  # repos/<owner>/<name>; GitHub answers 404 for a missing repo
+            full = f"{parts[1]}/{parts[2]}"
+            return {"node_id": f"R_{full}", "size": 1, "pushed_at": "2026-01-01"} if full in self.repos else None
+        _, owner, name, _, label = parts
         return {} if f"{owner}/{name}:{label}" in self.labels else None
+
+    def git_identity(self):
+        return "dev@example.com"
 
     def run(self, args, input=None, cwd=None, check=True):
         self.writes.append(("gh", args[0], args[1]))
         if args[:2] == ["repo", "create"]:
             self.repos.add(args[2])
+        if args[:2] == ["label", "create"]:
+            self.labels.add(f"{args[args.index('--repo') + 1]}:{args[2]}")
 
     def git(self, args, cwd):
         self.writes.append(("git", args[0]))
@@ -180,6 +197,60 @@ class Runs(unittest.TestCase):
         code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
         self.assertEqual(code, 2)
         self.assertIn("https://x/3/workflows: Auto-add to project", log)
+
+
+class ReviewCases(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.home))
+        self.cfgpath = os.path.join(self.home, "boards.json")
+
+    def write(self, obj):
+        path = os.path.join(self.home, "github.json")
+        with open(path, "w") as f:
+            json.dump(obj, f)
+        return path
+
+    def test_duplicate_board_names_and_bad_templates_are_refused(self):
+        twice = {"owners": [ORG, dict(ORG, login="other-co")]}
+        with self.assertRaisesRegex(pv.ProvisionError, "two boards are named"):
+            pv.load(self.write(twice))
+        bad = {"owners": [dict(ORG, boards=[dict(ORG["boards"][0], template={"owner": "tpl"})])]}
+        with self.assertRaisesRegex(pv.ProvisionError, "template needs"):
+            pv.load(self.write(bad))
+        with self.assertRaisesRegex(pv.ProvisionError, "non-empty"):
+            pv.load(self.write([1]))
+
+    def test_placeholder_theme_is_dropped_when_real_themes_arrive(self):
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Placeholder"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertEqual(code, 0, log)
+        opts = next(w[2] for w in gh.writes if w[0] == "options")
+        self.assertEqual([o["name"] for o in opts], ["Data", "App"])
+
+    def test_a_config_entry_for_another_project_is_reported(self):
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        with open(self.cfgpath, "w") as f:
+            json.dump({"boards": {"widget": {"owner": "your-org", "owner_type": "organization", "number": 2}}}, f)
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertEqual(code, 2)
+        self.assertIn("points at your-org #2, not acme-co #3", log)
+
+    def test_new_repo_layout_includes_the_board_workflow(self):
+        self.assertIn(".github/workflows/board.yml", pv.scaffold("acme-co", {"name": "ops"}))
+
+    def test_config_entry_carries_repos_and_release(self):
+        gh = FakeGH({"acme-co": "Organization"})
+        org = dict(ORG, repos=[dict(r, path=os.path.join(self.home, r["name"]), release="tags" if r["name"] == "widget" else "none")
+                               for r in ORG["repos"]])
+        code, log = run(gh, {"owners": [org]}, True, self.cfgpath)
+        self.assertEqual(code, 0, log)
+        e = pv.read_json(self.cfgpath)["boards"]["widget"]
+        self.assertEqual((e["repos"], e["release"]), (["acme-co/widget"], "tags"))
 
 
 if __name__ == "__main__":

@@ -8,17 +8,20 @@ boards and the `board` config.
 Reads github.json (copy github.example.json and edit it). For each owner it:
 
   1. checks the organization exists (GitHub has no API to create one: the report links the page);
-  2. creates each missing repo, private by default, with the guide's layout committed in a local
-     clone at <path> (README.md, AGENTS.md, STATUS.md, design/, docs/decisions/, .gitignore, and
-     backend/, frontend/, scripts/ for a product repo), and the `test-fixture` label;
+  2. creates each missing repo, private by default, from the guide's layout committed first in a
+     local clone at <path> (README.md, AGENTS.md, STATUS.md, design/, docs/decisions/, .gitignore,
+     the board workflow in .github/workflows/, and backend/, frontend/, scripts/ for a product
+     repo), then pushed by `gh repo create --source --push`; and adds the test-fixture label;
   3. copies each missing board from its template, links its repos, and sets its Themes;
   4. checks each board's built-in workflows are enabled (GitHub has no API to enable them:
      the report links each board's Workflows page);
-  5. adds each board to the `board` config ($BOARD_CONFIG or ~/.config/board/boards.json),
-     keeping boards already there.
+  5. adds each board to the `board` config ($BOARD_CONFIG or ~/.config/board/boards.json), with
+     its repos and release setting, keeping boards already there; an existing entry that points
+     at a different project is reported.
 
-Re-runnable: it finds what exists by name and only creates what's missing. Needs `gh`, logged in
-with the `repo`, `project` and `read:org` scopes.
+Re-runnable: it finds what exists by name and only creates what's missing. A --live run ends
+with a fresh rehearsal, so the report reads back what landed. Needs `gh`, logged in with the
+`repo`, `project` and `read:org` scopes, `git` with user.name and user.email set, and python3.
 
 Exit codes: 0 everything in place; 1 an error; 2 steps remain (rehearsal, or something only the
 web UI can do).
@@ -31,6 +34,9 @@ WORKFLOWS = ["Item closed", "Item reopened", "Pull request linked to issue", "Pu
 CONFIG_PATH = os.environ.get("BOARD_CONFIG") or os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "board", "boards.json")
 FIXTURE_LABEL = ("test-fixture", "ededed", "Standing test issues for the board command")
+EXAMPLE_BOARDS = os.path.join(HERE, "template", "board", ".config", "board", "boards.example.json")
+WORKFLOW = os.path.join(HERE, "template", "repo", ".github", "workflows", "board.yml")
+THEME_COLORS = ["BLUE", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE", "GRAY"]
 
 
 class ProvisionError(Exception):
@@ -59,8 +65,17 @@ class GH:
         return out["data"]
 
     def rest(self, path):
+        """GET a REST path; None on 404, ProvisionError on any other failure."""
         r = self.run(["api", path], check=False)
-        return json.loads(r.stdout) if r.returncode == 0 else None
+        if r.returncode == 0:
+            return json.loads(r.stdout)
+        if "404" in r.stderr or "Not Found" in r.stderr:
+            return None
+        raise ProvisionError(f"gh api {path}: {r.stderr.strip()}")
+
+    def git_identity(self):
+        r = subprocess.run(["git", "config", "user.email"], capture_output=True, text=True)
+        return r.stdout.strip()
 
     def git(self, args, cwd):
         r = subprocess.run(["git", *args], capture_output=True, text=True, cwd=cwd)
@@ -68,15 +83,15 @@ class GH:
             raise ProvisionError(f"git {' '.join(args[:2])}: {r.stderr.strip()}")
 
 
-OWNER_Q = """query($l:String!){repositoryOwner(login:$l){__typename id login
-  ... on Organization{projectsV2(first:100){nodes{id number title url closed}}}
-  ... on User{projectsV2(first:100){nodes{id number title url closed}}}}}"""
+OWNER_Q = """query($l:String!){repositoryOwner(login:$l){__typename id login}}"""
+BOARDS_Q = """query($l:String!,$t:String!){repositoryOwner(login:$l){
+  ... on Organization{projectsV2(first:50, query:$t){nodes{id number title url closed}}}
+  ... on User{projectsV2(first:50, query:$t){nodes{id number title url closed}}}}}"""
 TEMPLATE_Q = """query($l:String!,$n:Int!){organization(login:$l){projectV2(number:$n){id title template}}}"""
 BOARD_Q = """query($p:ID!){node(id:$p){... on ProjectV2{number url
   repositories(first:50){nodes{nameWithOwner}}
   workflows(first:20){nodes{name enabled}}
   fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}"""
-REPO_Q = """query($o:String!,$n:String!){repository(owner:$o,name:$n){id}}"""
 COPY_M = """mutation($p:ID!,$o:ID!,$t:String!){copyProjectV2(input:{projectId:$p,ownerId:$o,title:$t,includeDraftIssues:false}){projectV2{id number url}}}"""
 LINK_M = """mutation($p:ID!,$r:ID!){linkProjectV2ToRepository(input:{projectId:$p,repositoryId:$r}){repository{id}}}"""
 OPTIONS_M = """mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}"""
@@ -89,19 +104,34 @@ def load(path):
         raise ProvisionError(f"no config at {path}: copy github.example.json to github.json and edit it")
     except ValueError as e:
         raise ProvisionError(f"{path}: not valid JSON ({e})")
-    if not isinstance(cfg.get("owners"), list) or not cfg["owners"]:
-        raise ProvisionError(f"{path}: needs a non-empty \"owners\" list")
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("owners"), list) or not cfg["owners"]:
+        raise ProvisionError(f"{path}: needs an object with a non-empty \"owners\" list")
+    names = set()
     for o in cfg["owners"]:
+        if not isinstance(o, dict):
+            raise ProvisionError(f"{path}: each owner is an object")
         for k in ("login", "type"):
             if not o.get(k):
                 raise ProvisionError(f"{path}: an owner is missing \"{k}\"")
         if o["type"] not in ("organization", "user"):
             raise ProvisionError(f"{path}: owner {o['login']}: type must be organization or user")
+        for r in o.get("repos", []):
+            if not isinstance(r, dict) or not r.get("name"):
+                raise ProvisionError(f"{path}: a repo of {o['login']} is missing \"name\"")
+            if r.get("release", "none") not in ("none", "tags"):
+                raise ProvisionError(f"{path}: repo {r['name']}: release must be none or tags")
         repos = {r["name"] for r in o.get("repos", [])}
         for b in o.get("boards", []):
             for k in ("name", "title", "template"):
                 if not b.get(k):
                     raise ProvisionError(f"{path}: a board of {o['login']} is missing \"{k}\"")
+            t = b["template"]
+            if not isinstance(t, dict) or not t.get("owner") or not isinstance(t.get("number"), int):
+                raise ProvisionError(f"{path}: board {b['name']}: template needs an organization \"owner\" and a \"number\" "
+                                     "(Projects templates live in organizations)")
+            if b["name"] in names:
+                raise ProvisionError(f"{path}: two boards are named {b['name']!r}; board names must be unique")
+            names.add(b["name"])
             missing = [r for r in b.get("repos", []) if r not in repos]
             if missing:
                 raise ProvisionError(f"{path}: board {b['name']} links repos not listed under {o['login']}: {missing}")
@@ -138,6 +168,9 @@ def scaffold(owner, repo):
                           "## What's in progress\n\n(none)\n\n## What's next\n\n- File the first issues on the board.\n\n"
                           "## Where to find things\n\n- Layout → [README.md](README.md)\n- Conventions → [AGENTS.md](AGENTS.md)\n")
     files[".gitignore"] = "\n".join(ignore) + "\n"
+    if os.path.exists(WORKFLOW):
+        with open(WORKFLOW) as f:
+            files[".github/workflows/board.yml"] = f.read()
     return files
 
 
@@ -147,6 +180,11 @@ class Run:
     def __init__(self, gh, cfg, live, config_path=CONFIG_PATH, out=print):
         self.gh, self.cfg, self.live, self.config_path, self.out = gh, cfg, live, config_path, out
         self.todo, self.manual, self.entries = [], [], {}
+        try:
+            self.defaults = read_json(config_path).get("defaults", {})
+        except (OSError, ValueError):
+            self.defaults = {}
+        self.fixture_label = (self.defaults.get("fixture") or {}).get("label") or FIXTURE_LABEL[0]
 
     def say(self, mark, text):
         self.out(f"  {mark} {text}")
@@ -176,25 +214,30 @@ class Run:
         repo_ids = {}
         for r in o.get("repos", []):
             repo_ids[r["name"]] = self.repo(login, r)
-        boards = {p["title"]: p for p in node["projectsV2"]["nodes"] if not p["closed"]}
+        release = {r["name"]: r.get("release", "none") for r in o.get("repos", [])}
         for b in o.get("boards", []):
-            self.board(login, typ, node["id"], boards, b, repo_ids)
+            found = self.gh.graphql(BOARDS_Q, l=login, t=b["title"])["repositoryOwner"]["projectsV2"]["nodes"]
+            boards = {p["title"]: p for p in found if not p["closed"] and p["title"] == b["title"]}
+            self.board(login, typ, node["id"], boards, b, repo_ids, release)
 
     def repo(self, owner, r):
         name = f"{owner}/{r['name']}"
-        found = self.gh.graphql(REPO_Q, o=owner, n=r["name"])["repository"]
+        found = self.gh.rest(f"repos/{name}")
         if found:
-            self.say("✓", f"repo {name}")
-            rid = found["id"]
+            rid = found["node_id"]
+            if found.get("size") == 0 and not found.get("pushed_at"):
+                self.by_hand(f"repo {name} exists but is empty: push its layout (or delete it and run this again)")
+            else:
+                self.say("✓", f"repo {name}")
         else:
-            self.pending(f"repo {name} ({'public' if r.get('public') else 'private'}, {r.get('kind', 'plain')} layout)")
+            path = os.path.expanduser(r.get("path") or os.path.join("~", owner, r["name"]))
+            if os.path.exists(path) and (not os.path.isdir(path) or os.listdir(path)):
+                raise ProvisionError(f"{path} exists and isn't an empty folder; set \"path\" for {name}")
+            if not self.gh.git_identity():
+                raise ProvisionError("git has no user.email; set user.name and user.email before creating repos")
+            self.pending(f"repo {name} ({'public' if r.get('public') else 'private'}, {r.get('kind', 'plain')} layout, at {path})")
             if not self.live:
                 return None
-            path = os.path.expanduser(r.get("path") or os.path.join("~", owner, r["name"]))
-            if os.path.exists(path) and os.listdir(path):
-                raise ProvisionError(f"{path} exists and isn't empty; set \"path\" for {name}")
-            self.gh.run(["repo", "create", name, "--public" if r.get("public") else "--private",
-                         "--description", r.get("description", "")])
             os.makedirs(path, exist_ok=True)
             for rel, text in scaffold(owner, r).items():
                 os.makedirs(os.path.join(path, os.path.dirname(rel)), exist_ok=True)
@@ -204,11 +247,11 @@ class Run:
             g(["init", "-q", "-b", "main"], path)
             g(["add", "."], path)
             g(["commit", "-q", "-m", "chore: repo layout from the architecture guide"], path)
-            g(["remote", "add", "origin", f"https://github.com/{name}.git"], path)
-            g(["push", "-q", "-u", "origin", "main"], path)
-            rid = self.gh.graphql(REPO_Q, o=owner, n=r["name"])["repository"]["id"]
+            self.gh.run(["repo", "create", name, "--public" if r.get("public") else "--private",
+                         "--description", r.get("description", ""), "--source", path, "--remote", "origin", "--push"])
+            rid = self.gh.rest(f"repos/{name}")["node_id"]
             self.say("✓", f"repo {name} created, layout pushed from {path}")
-        label = FIXTURE_LABEL[0]
+        label = self.fixture_label
         if self.gh.rest(f"repos/{name}/labels/{label}") is None:
             self.pending(f"label {label} on {name}")
             if self.live:
@@ -216,16 +259,18 @@ class Run:
                              "--description", FIXTURE_LABEL[2]])
         return rid
 
-    def board(self, owner, typ, owner_id, boards, b, repo_ids):
+    def board(self, owner, typ, owner_id, boards, b, repo_ids, release=None):
         p = boards.get(b["title"])
         if not p:
             t = b["template"]
+            org = self.gh.graphql(TEMPLATE_Q, l=t["owner"], n=t["number"])["organization"]
+            src = (org or {}).get("projectV2")
+            if not src:
+                raise ProvisionError(f"board {b['name']}: template {t['owner']} #{t['number']} not found (it must be an "
+                                     "organization's project you can read)")
             self.pending(f"board \"{b['title']}\" from template {t['owner']} #{t['number']}")
             if not self.live:
                 return
-            src = self.gh.graphql(TEMPLATE_Q, l=t["owner"], n=t["number"])["organization"]["projectV2"]
-            if not src:
-                raise ProvisionError(f"template {t['owner']} #{t['number']} not found")
             p = self.gh.graphql(COPY_M, p=src["id"], o=owner_id, t=b["title"])["copyProjectV2"]["projectV2"]
         d = self.gh.graphql(BOARD_Q, p=p["id"])["node"]
         self.say("✓", f"board \"{b['title']}\" #{d['number']} {d['url']}")
@@ -246,8 +291,10 @@ class Run:
         if off:
             self.by_hand(f"turn on in {d['url']}/workflows: {', '.join(off)}")
         levels = [o["name"] for o in (fields.get("Category") or {}).get("options", [])]
-        self.entries[b["name"]] = {"owner": owner, "owner_type": typ, "number": d["number"],
-                                   "hierarchy": levels, "outside_hierarchy": [],
+        repos = [f"{owner}/{rn}" for rn in b.get("repos", [])]
+        tags = any((release or {}).get(rn) == "tags" for rn in b.get("repos", []))
+        self.entries[b["name"]] = {"owner": owner, "owner_type": typ, "number": d["number"], "repos": repos,
+                                   "release": "tags" if tags else "none", "hierarchy": levels, "outside_hierarchy": [],
                                    **({"read_only": True} if b.get("read_only") else {})}
 
     def themes(self, d, field, themes):
@@ -255,25 +302,35 @@ class Run:
             raise ProvisionError(f"board #{d['number']} has no Theme field")
         have = [o["name"] for o in field["options"]]
         new = [t for t in themes if t not in have]
-        if not new:
+        drop = [o for o in field["options"] if o["name"] == "Placeholder" and "Placeholder" not in themes]
+        if not new and not drop:
             return
-        self.pending(f"Themes on board #{d['number']}: {', '.join(new)}")
+        self.pending(f"Themes on board #{d['number']}: {', '.join(new) or '(none new)'}"
+                     + ("; drop the template's Placeholder" if drop else ""))
         if self.live:
-            keep = [{k: o[k] for k in ("id", "name", "color", "description")} for o in field["options"]]
+            keep = [{k: o[k] for k in ("id", "name", "color", "description")} for o in field["options"] if o not in drop]
             self.gh.graphql(OPTIONS_M, f=field["id"],
-                            o=keep + [{"name": t, "color": "GRAY", "description": ""} for t in new])
+                            o=keep + [{"name": t, "color": THEME_COLORS[i % len(THEME_COLORS)], "description": ""}
+                                      for i, t in enumerate(new)])
 
     def write_config(self):
         try:
             cur = read_json(self.config_path)
         except OSError:
-            cur = read_json(os.path.join(HERE, "template", "board", ".config", "board", "boards.example.json"))
+            cur = read_json(EXAMPLE_BOARDS)
             cur["boards"] = {}
         except ValueError as e:
             raise ProvisionError(f"{self.config_path}: not valid JSON ({e})")
-        add = {k: v for k, v in self.entries.items() if k not in cur.get("boards", {})}
+        have = cur.get("boards", {})
+        for k, v in self.entries.items():
+            old = have.get(k)
+            if old and any(old.get(x, v[x]) != v[x] for x in ("owner", "owner_type", "number")):
+                self.by_hand(f"board config entry {k!r} points at {old.get('owner')} #{old.get('number')}, not "
+                             f"{v['owner']} #{v['number']}: fix or remove it in {self.config_path}")
+        add = {k: v for k, v in self.entries.items() if k not in have}
         if not add:
-            self.say("✓", f"board config {self.config_path}")
+            if self.entries:
+                self.say("✓", f"board config {self.config_path}")
             return
         self.pending(f"board config entries {', '.join(add)} in {self.config_path}")
         if self.live:
@@ -290,6 +347,10 @@ class Run:
         self.out("")
         if self.todo and not self.live:
             self.out(f"{len(self.todo)} to create: run again with --live.")
+        if self.todo and self.live:
+            self.out("Reading back what landed:")
+            again = Run(self.gh, self.cfg, False, self.config_path, self.out)
+            return again.go()
         if self.manual:
             self.out(f"{len(self.manual)} step(s) need the web UI (marked !); run this again after them.")
         if not self.todo and not self.manual:
@@ -298,21 +359,25 @@ class Run:
 
 
 def main(argv):
-    live = "--live" in argv
-    args = [a for a in argv if a != "--live"]
-    if args and args[0] in ("-h", "--help"):
+    if any(a in ("-h", "--help") for a in argv):
         print(__doc__)
         return 0
+    live = "--live" in argv
+    args = [a for a in argv if a != "--live"]
+    bad = [a for a in args if a.startswith("-")]
+    if bad or len(args) > 1:
+        print(f"provision: unexpected {' '.join(bad or args[1:])}; see --help", file=sys.stderr)
+        return 1
     path = args[0] if args else os.path.join(HERE, "github.json")
     try:
         cfg = load(path)
         print(("Applying " if live else "Rehearsing ") + path)
-        code = Run(GH(), cfg, live).go()
-        if live and code == 0:
-            return 0
-        return code
+        return Run(GH(), cfg, live).go()
     except ProvisionError as e:
         print(f"provision: {e}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"provision: {e.filename} not found (needs gh and git on PATH)", file=sys.stderr)
         return 1
 
 
