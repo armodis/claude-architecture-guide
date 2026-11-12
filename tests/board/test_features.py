@@ -236,33 +236,92 @@ class Release(unittest.TestCase):
 
 
 class Guard(unittest.TestCase):
-    def run_guard(self, issue_status, open_prs, board_cfg=None):
-        plans = []
+    def run_guard(self, issue_status, open_prs, board_cfg=None, later_prs=None, later_status=None, on_board=True,
+                  logs=None, state="CLOSED", returns=None, slept=None):
+        """open_prs on arrival; later_prs / later_status: what the recheck sees (another merge, the
+        board's own "Item closed" landing late, or a release moving the item). returns: what each
+        apply_plan call reports, in order. Returns (Status values written, guard's exit code)."""
+        plans, status, calls = [], {"v": issue_status}, {"pr": 0}
+        returns = list(returns or [])
 
         class GH:
             def pr(self, ref):
+                calls["pr"] += 1
+                prs = open_prs if calls["pr"] == 1 or later_prs is None else later_prs
                 return dict(id="PR", owner="acme-co", state="MERGED", merged=True, url="u",
-                            closes=[dict(id="I4", ref="acme-co/ops#4", state="CLOSED", open_prs=open_prs)])
+                            closes=[dict(id="I4", ref="acme-co/ops#4", state=state, open_prs=prs)])
+
+        def sleep(s):
+            if slept is not None:
+                slept.append(s)
+            if later_status is not None:
+                status["v"] = later_status
         b = board_cfg or WORK
         saved = board.gql, board.pull, board.apply_plan
         board.gql = lambda q, **v: (_ for _ in ()).throw(AssertionError("no direct GitHub writes"))
-        board.pull = lambda bb, write=True: tree_snap(item("acme-co/ops#4", status=issue_status, state="CLOSED"))
-        board.apply_plan = lambda bb, boards, plan, **kw: plans.append(plan) or board.APPLIED
+        board.pull = lambda bb, write=True: tree_snap(*([item("acme-co/ops#4", status=status["v"], state="CLOSED")]
+                                                        if on_board else []))
+
+        def apply(bb, boards, plan, **kw):
+            plans.append(plan)
+            status["v"] = plan[0]["value"]
+            return returns.pop(0) if returns else board.APPLIED
+        board.apply_plan = apply
         try:
-            board.guard({"company": b}, "acme-co/ops#40", gh=GH(), log=lambda *_: None)
+            rc = board.guard({"company": b}, "acme-co/ops#40", gh=GH(), sleep=sleep,
+                             log=(logs.append if logs is not None else lambda *_: None))
         finally:
             board.gql, board.pull, board.apply_plan = saved
-        return [op["value"] for p in plans for op in p]
+        return [op["value"] for p in plans for op in p], rc
+
+    def written(self, *a, **kw):
+        return self.run_guard(*a, **kw)[0]
 
     def test_another_open_pr_keeps_the_issue_in_review_without_reopening(self):
-        self.assertEqual(self.run_guard("Done", ["acme-co/ops#41"]), ["In Review"])
+        self.assertEqual(self.written("Done", ["acme-co/ops#41"]), ["In Review"])
 
     def test_the_last_merge_sets_done_or_pending_release(self):
-        self.assertEqual(self.run_guard("In Review", []), ["Done"])
-        self.assertEqual(self.run_guard("In Review", [], dict(WORK, release="tags")), ["Pending Release"])
+        self.assertEqual(self.written("In Review", []), ["Done"])
+        self.assertEqual(self.written("In Review", [], dict(WORK, release="tags")), ["Pending Release"])
 
     def test_nothing_to_do_when_status_is_already_right(self):
-        self.assertEqual(self.run_guard("Done", []), [])
+        self.assertEqual(self.written("Done", []), [])
+
+    def test_recheck_restores_in_review_when_item_closed_lands_after_the_first_read(self):
+        self.assertEqual(self.written("In Review", ["acme-co/ops#41"], later_status="Done"), ["In Review"])
+
+    def test_recheck_sets_done_when_the_other_pr_merged_meanwhile(self):
+        self.assertEqual(self.written("Done", ["acme-co/ops#41"], later_prs=[]), ["In Review", "Done"])
+
+    def test_recheck_keeps_a_release_moving_the_item_to_done(self):
+        self.assertEqual(self.written("In Review", [], dict(WORK, release="tags"), later_status="Done"),
+                         ["Pending Release"])
+
+    def test_a_reopened_issue_is_left_alone(self):
+        logs = []
+        self.assertEqual(self.written("In Progress", [], state="OPEN", logs=logs), [])
+        self.assertTrue(any("open again" in m for m in logs), logs)
+
+    def test_a_recheck_that_fixes_the_board_clears_the_first_passes_failure(self):
+        out, rc = self.run_guard("In Review", ["acme-co/ops#41"], later_status="Done", returns=[board.APPLIED])
+        self.assertEqual(rc, board.APPLIED)
+        out, rc = self.run_guard("Done", ["acme-co/ops#41"], later_status="Done", returns=[board.FAILED, board.APPLIED])
+        self.assertEqual((out, rc), (["In Review", "In Review"], board.APPLIED))
+
+    def test_a_recheck_that_finds_the_board_right_clears_the_first_passes_failure(self):
+        self.assertEqual(self.run_guard("Done", ["acme-co/ops#41"], returns=[board.FAILED]), (["In Review"], board.APPLIED))
+        self.assertEqual(self.run_guard("In Review", [], returns=[board.FAILED]), (["Done"], board.APPLIED))
+
+    def test_recheck_off_at_zero_and_skipped_when_nothing_is_on_a_board(self):
+        slept = []
+        self.written("Done", ["acme-co/ops#41"], dict(WORK, guard_recheck_seconds=0), later_status="Done", slept=slept)
+        self.written("Done", [], on_board=False, slept=slept)
+        self.assertEqual(slept, [])
+
+    def test_an_issue_on_no_board_is_reported(self):
+        logs = []
+        self.assertEqual(self.written("Done", [], on_board=False, logs=logs), [])
+        self.assertTrue(any("not on company" in m for m in logs), logs)
 
 
 class StateFolder(unittest.TestCase):

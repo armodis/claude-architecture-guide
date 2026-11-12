@@ -111,7 +111,7 @@ DEFAULTS = {
     "leaf_type": "Task", "parent_type": "Feature", "release": "none",
     "required_fields": ["Status", "Priority", "Theme", "Complexity"], "effort_levels": ["User Story", "Task"],
     "done_marker": r"(?im)^\W*(?:what\s+)?(done when|done looks like|definition of done)\b",
-    "freshness_hours": 24, "settle_seconds": 3, "stale_days": 7, "review_over_items": 10,
+    "freshness_hours": 24, "settle_seconds": 3, "guard_recheck_seconds": 15, "stale_days": 7, "review_over_items": 10,
     "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
     "repos": [], "outside_hierarchy": [], "parent_optional": [],
 }
@@ -1437,36 +1437,79 @@ def boards_holding(boards, repo):
     return listed or [b for b in boards.values() if b["owner"] == owner_of(repo) and not b.get("read_only")]
 
 
-def guard(boards, pr_ref, gh=None, log=print):
+def guard(boards, pr_ref, gh=None, log=print, sleep=time.sleep):
     """After a pull request merges, keep the board Status of each issue it closes right. GitHub
     closes the issue at the first closing pull request that merges, and the board's "Item closed"
     workflow then sets Done; the issue may stay closed, but its Status follows the pull requests:
     In Review while another closing pull request is open, and Done (Pending Release on a board
-    whose repos release by tag) once the last one has merged."""
+    whose repos release by tag) once the last one has merged. An issue someone has reopened is
+    left alone.
+
+    After guard_recheck_seconds (0 turns it off) it reads the pull request again and corrects
+    only the two races a single read can miss: the board's own "Item closed" landing after the
+    first read while another closing pull request is still open (back to In Review), and that
+    other pull request merging meanwhile while the Status is still In Review (on to Done or
+    Pending Release). Any other Status set in the wait, such as a release moving an item to
+    Done, is kept; on a tag-release board "Item closed" sets Pending Release, so a Done there
+    comes from a release."""
     gh = gh or GitHub()
     pr = gh.pr(pr_ref)
     if not pr["merged"]:
         log(f"{pr_ref} is not merged; nothing to do")
         return APPLIED
-    rc = APPLIED
-    for iss in pr["closes"]:
+    results, touched = {}, []
+
+    def check(iss, n):
+        if iss["state"] != "CLOSED":
+            if not n:
+                log(f"{iss['ref']} is open again; left alone")
+            return
         others = [x for x in iss["open_prs"] if x != pr_ref]
-        for b in boards_holding(boards, iss["ref"].split("#")[0]):
+        holding = boards_holding(boards, iss["ref"].split("#")[0])
+        if not holding and not n:
+            log(f"{iss['ref']}: its repo is on no board in the config; skipped")
+        for b in holding:
             e = by_ref(pull(b)).get(iss["ref"])
             if e is None:
+                if not n:
+                    log(f"{iss['ref']}: not on {b['name']}; skipped")
                 continue
-            st = b["statuses"]
+            if not n:
+                touched.append(b)
+            st, have = b["statuses"], e["fields"].get("Status")
             if others:
-                want = st["review"]
-                log(f"{iss['ref']} on {b['name']}: {', '.join(others)} still open; Status {want}")
+                want, why = st["review"], f"{', '.join(others)} still open"
             else:
                 want = st["pending"] if b.get("release") == "tags" else st["done"]
-                log(f"{iss['ref']} on {b['name']}: last closing pull request merged; Status {want}")
-            if e["fields"].get("Status") == want:
+                why = "last closing pull request merged"
+            if n:
+                results.pop((iss["ref"], b["name"]), None)  # the recheck's reading supersedes pass one's
+                if not (want == st["review"] or have == st["review"]):
+                    continue  # on recheck, only the two races above
+            if have == want:
+                if not n:
+                    log(f"{iss['ref']} on {b['name']}: {why}; Status already {want}")
                 continue
+            log(f"{iss['ref']} on {b['name']}: {why}; Status {want}" + (" (on recheck)" if n else ""))
             r = apply_plan(b, boards, [{"op": "set_field", "item": iss["ref"], "field": "Status", "value": want,
                                         "cross_owner": owner_of(iss["ref"]) != b["owner"]}], approved=True, log=log)
-            rc = max(rc, r) if r != SIDE_EFFECTS else rc
+            results[(iss["ref"], b["name"])] = r  # a later pass's result replaces an earlier one
+
+    for iss in pr["closes"]:
+        check(iss, 0)
+    recheck = max((max(0, b.get("guard_recheck_seconds", 0)) for b in touched), default=0)
+    if recheck:
+        sleep(recheck)
+        try:
+            pr = gh.pr(pr_ref)
+        except BoardError as err:
+            log(f"recheck skipped: {err}")
+        else:
+            for iss in pr["closes"]:
+                check(iss, 1)
+    rc = APPLIED
+    for r in results.values():
+        rc = max(rc, r) if r != SIDE_EFFECTS else rc
     return rc
 
 
