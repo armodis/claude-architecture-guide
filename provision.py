@@ -306,7 +306,7 @@ class Run:
             have = self.actions_names(name, typ == "organization")
         except ProvisionError:
             self.by_hand(f"{name}: couldn't read its Actions secrets and variables with this token; check by hand that "
-                         "it has a token (BOARD_APP_ID and BOARD_APP_KEY, or BOARD_TOKEN) and BOARD_CONFIG")
+                         "it has a token (BOARD_APP_ID and BOARD_APP_KEY, or BOARD_TOKEN), BOARD_CONFIG and BOARD_REF")
             return
         missing = []
         if not ({"var:BOARD_APP_ID", "secret:BOARD_APP_KEY"} <= have or "secret:BOARD_TOKEN" in have):
@@ -318,7 +318,7 @@ class Run:
             self.by_hand(f"{name}: add {'; and '.join(missing)} in Settings > Secrets and variables > Actions; "
                          "until then the board workflow skips")
         if "var:BOARD_REF" not in have:
-            self.by_hand(f"{name}: set variable BOARD_REF to the guide commit SHA to run the board command from; "
+            self.by_hand(f"{name}: set variable BOARD_REF to the full guide commit SHA to run the board command from; "
                          "without it the board workflow runs the guide's main and warns")
 
     def actions_names(self, name, org):
