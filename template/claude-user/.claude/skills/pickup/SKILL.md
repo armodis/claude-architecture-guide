@@ -5,18 +5,19 @@ description: Choose the next ready item from a GitHub project board by the selec
 
 # pickup
 
-**Inputs:** the board config (`board boards`), the board's snapshot (`board snapshot <board>`, refreshed when older than 24 hours), the repo's STATUS.md "What's in progress", and the user's filters: a repo, a label, or a named mode.
+**Inputs:** the board config (`board boards`, or `.` for the current repo's board); the board's snapshot with its analysis notes (`board snapshot <board>`, refreshed automatically once older than a day); the repo's STATUS.md "What's in progress"; and the user's filters: a repo, a label, or a named mode.
 
 ## Select
 
 1. `git pull`, then read STATUS.md "What's in progress" in the repo.
-2. `board select <board> [--repo owner/repo] [--label L] --count 5`. It returns Todo items ordered by Priority, then Effort, then age, and lists the items it skipped and why.
+2. `board select <board> [--repo owner/repo] [--label L] --count 20`. It returns Todo items ordered by Priority, then Effort, then age. It skips, with the reason: items assigned to someone, items blocked by an open issue, items missing a required field ("needs grooming"), and items already claimed in STATUS.md.
 3. Narrow by mode when the user names one: **quick-wins** (Priority ≤ P1 and Effort ≤ 2), **focused-feature** (Priority ≤ P1 and Effort ≥ 5), **backlog-cleanup** (Effort ≤ 2).
-4. Skip an item that is assigned to a person, blocked by an open issue, or already in some STATUS.md "What's in progress". Pick only Todo items; an unattended run may refine a Backlog item up to its open decision and leave it in Backlog.
-5. An item missing required fields is not picked: list it as "needs grooming", and fill what the issue itself makes clear through the `item` skill.
+4. Pick only from what `select` returned. An unattended run may also refine a Backlog item up to its open decision, record what it found with `board note`, and leave it in Backlog.
+5. For each item skipped as "needs grooming", fill what the issue itself makes clear through the `item` skill, and list the rest for the user.
+6. Read `board notes` on the chosen item; recheck any marked STALE.
 
 ## Claim
 
-1. Read the chosen issue live (`gh issue view`) to confirm it is open, still Todo and still unassigned.
-2. `board claim <board> <owner/repo#n> --status-md STATUS.md`, then commit STATUS.md with `status: claim #N` and push.
+1. Read the chosen issue live (`gh issue view`) to confirm it is open and its scope still matches.
+2. `board claim <board> <owner/repo#n> --status-md STATUS.md`. It refuses an item that is no longer at Todo or that someone else holds, sets In Progress, and assigns you. Then commit STATUS.md with `status: claim #N` and push.
 3. Tell the user what was claimed, why it came first, and what was skipped.

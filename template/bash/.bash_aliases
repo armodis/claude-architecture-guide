@@ -14,3 +14,6 @@ alias cpersonal='cd ~/personal && claude'
 alias gs='git status'
 alias gd='git diff'
 alias gl='git log --oneline -20'
+
+# The board command and other user tools install into ~/.local/bin.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac

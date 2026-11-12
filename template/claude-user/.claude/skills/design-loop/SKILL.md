@@ -25,11 +25,13 @@ Agents settle facts; the operator makes the judgment calls. Every question the o
 
 On the first run in a repo, add `design/*/scratch/` to its `.gitignore`. Use the date from `date +%F`.
 
-**Cost:** at the start of each step, run `python3 ~/.claude/skills/design-loop/scripts/cost.py mark <run-dir> <step>` (steps `0-frame`, `1-thin-rail`, `2-direction-gate`, `3-probes-tests`, `4-contract-gate`, `5-build`, `6-verify`). Marking a step also links the session to the run, which the compaction hook relies on: when continuing a run in a new session, mark the current step again first. Run `… report <run-dir>` at each gate and at the end; it rewrites the report block in `cost.md`, and it refuses to run on a machine without the sessions' transcripts.
+**Cost:** at the start of each step, run `python3 <this skill's folder>/scripts/cost.py mark <run-dir> <step>` (`~/.claude/skills/design-loop/` when installed at user level) (steps `0-frame`, `1-thin-rail`, `2-direction-gate`, `3-probes-tests`, `4-contract-gate`, `5-build`, `6-verify`). Marking a step also links the session to the run, which the compaction hook relies on: when continuing a run in a new session, mark the current step again first. Run `… report <run-dir>` at each gate and at the end; it rewrites the report block in `cost.md`, and it refuses to run on a machine without the sessions' transcripts.
 
 ## Steps
 
 ### 0. Frame (operator, briefly)
+
+Create the run folder from the templates first, then mark `0-frame`, so the framing's spend is counted and the session is linked to the run.
 
 Find where the request is genuinely underspecified and settle what you can by reading first. Then restate **GOAL / REQUIREMENTS / DONE WHEN / OUT OF SCOPE / ASSUMPTIONS**, plus an effort estimate (complexity rating and its drivers) and the judgment calls you can already see. Ask about the endpoint: how far the run goes. Flag the assumption most likely to be wrong. Wait for explicit confirmation; write `framing.md` with the corrections the operator made and their wording. An issue's own scope is not proof the framing is right — check it against what the operator says now.
 
@@ -67,7 +69,7 @@ Spawn `design-verifier` on the run folder in its own context, with the output pa
 
 - Lasting decisions become ADRs in `docs/decisions/` or stay as tests; reader-facing material moves to `docs/`.
 - Run `cost.py mark <run-dir> closed`, then the cost report; write estimate against actual at the top of `cost.md`.
-- Set `framing.md`'s **Status:** to `Closed` (the compaction hook skips closed runs). The folder stays as the record.
+- Set `framing.md`'s **Status:** to Closed, as the line's first word (the compaction hook skips closed runs). The folder stays as the record.
 - Update the repo's STATUS.md.
 
 ## After compaction

@@ -56,8 +56,10 @@ Write markdown to the output path in your prompt:
 ### J<n>. <question>
 **Tier:** full | default  
 **Options:**
+
 - **A. <name>:** what it is · what it gives · what it costs
 - **B. <name>:** …
+
 **Facts that bear on it:** F<n>, F<n>  
 **Recommendation (kept separate):** <option and why>
 

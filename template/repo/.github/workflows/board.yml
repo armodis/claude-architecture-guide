@@ -1,0 +1,59 @@
+# Board automation for this repo, from the architecture guide.
+#
+#   - When a pull request merges: GitHub closes each issue it names with a closing keyword, even
+#     when another open pull request closes the same issue. `board guard` reopens such an issue,
+#     says why, and sets it back to In Review.
+#   - When a release is published (repos that release by tag): `board release` moves this repo's
+#     Pending Release items whose merged pull requests are in the tag to Done.
+#
+# Needs, in the repo's settings:
+#   - secret BOARD_TOKEN: a token that can write to the board, which the default GITHUB_TOKEN
+#     can't: a GitHub App installation token for an organization board, or a personal access
+#     token with the repo and project scopes.
+#   - variable BOARD_CONFIG: the JSON of the board config (as in ~/.config/board/boards.json),
+#     with this repo listed in its board's "repos".
+#   - variable BOARD_REF (optional): the guide commit to take the board command from; pin a
+#     commit SHA. Defaults to main.
+# Without BOARD_TOKEN the job skips.
+name: board
+
+on:
+  pull_request:
+    types: [closed]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  board:
+    if: github.event_name == 'release' || github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.BOARD_TOKEN }}
+      BOARD_CONFIG: ${{ github.workspace }}/.board.json
+      BOARD_REF: ${{ vars.BOARD_REF || 'main' }}
+    steps:
+      - name: Skip without a token
+        if: env.GH_TOKEN == ''
+        run: echo "BOARD_TOKEN is not set; board automation skipped"
+      - name: Install the board command
+        if: env.GH_TOKEN != ''
+        env:
+          CONFIG_JSON: ${{ vars.BOARD_CONFIG }}
+        run: |
+          printf '%s' "$CONFIG_JSON" > "$BOARD_CONFIG"
+          curl -fsSL "https://raw.githubusercontent.com/armodis/claude-architecture-guide/${BOARD_REF}/template/board/.local/bin/board" -o "$RUNNER_TEMP/board"
+          chmod +x "$RUNNER_TEMP/board"
+      - name: Guard issues other pull requests still close
+        if: env.GH_TOKEN != '' && github.event_name == 'pull_request'
+        run: |
+          rc=0; "$RUNNER_TEMP/board" guard "${{ github.repository }}#${{ github.event.pull_request.number }}" || rc=$?
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]
+      - name: Move released items to Done
+        if: env.GH_TOKEN != '' && github.event_name == 'release'
+        run: |
+          board_name=$(python3 -c 'import json,os,sys; c=json.load(open(os.environ["BOARD_CONFIG"])); r=sys.argv[1]; print(next(n for n,b in c["boards"].items() if r in b.get("repos",[])))' "${{ github.repository }}")
+          rc=0; "$RUNNER_TEMP/board" release "$board_name" "${{ github.repository }}" "${{ github.event.release.tag_name }}" || rc=$?
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]

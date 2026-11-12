@@ -17,7 +17,8 @@
       ]
     },
     "stale_days": 7,
-    "review_over_items": 10
+    "review_over_items": 10,
+    "settle_seconds": 0
   },
   "boards": {
     "company": {

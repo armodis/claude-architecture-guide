@@ -17,14 +17,18 @@ print(d.get("session_id") or "-", d.get("cwd") or "-")' 2>/dev/null)
 [ "${sid:--}" != "-" ] || exit 0
 [ "${cwd:--}" != "-" ] || cwd=$PWD
 root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
+# A session in a linked worktree may keep its run folder in the main checkout: look there too.
+main=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+main=${main%/.git}
+roots=("$root"); [ -n "$main" ] && [ "$main" != "$root" ] && [ -d "$main/design" ] && roots+=("$main")
 
-for log in "$root"/design/*/cost-log.tsv; do
+for r in "${roots[@]}"; do for log in "$r"/design/*/cost-log.tsv; do
   [ -f "$log" ] || continue
   grep -qF "$sid" "$log" || continue
   f="$(dirname "$log")/framing.md"
   [ -f "$f" ] || continue
-  grep -qiE '^\**Status:?\**:?[[:space:]]*Closed\b' "$f" && continue
-  echo "=== Design-loop run for this session: ${f#"$root"/} (re-surfaced after compaction) ==="
+  grep -qiE '^\**Status:?\**:?[[:space:]]*`?Closed\b' "$f" && continue
+  echo "=== Design-loop run for this session: $f (re-surfaced after compaction) ==="
   cat "$f"
   echo "=== End of framing. It bounds the run: re-read it, and the run's decisions.md, before the next step. ==="
-done
+done; done
