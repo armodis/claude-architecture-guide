@@ -114,6 +114,7 @@ DEFAULTS = {
     "freshness_hours": 24, "settle_seconds": 3, "guard_recheck_seconds": 15, "stale_days": 7, "review_over_items": 10,
     "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
     "repos": [], "outside_hierarchy": [], "parent_optional": [],
+    "agent_field": "Agent", "responder_field": "Responder",
 }
 
 
@@ -1429,6 +1430,106 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
     return rc
 
 
+# ---------------------------------------------------------------- agents
+
+M_COMMENT = "mutation($s:ID!,$b:String!){addComment(input:{subjectId:$s,body:$b}){commentEdge{node{id url}}}}"
+ASK_KINDS = ("review", "question")
+MARK_RE = re.compile(r"<!-- board:(\w+) from=(\S+) to=(\S+)(?: kind=(\w+))? -->")
+INBOX_Q = """items(first:50, after:$after, query:$q){pageInfo{hasNextPage endCursor} nodes{id content{
+  ... on Issue{number title url repository{nameWithOwner} comments(last:30){nodes{body createdAt}}}
+  ... on PullRequest{number title url repository{nameWithOwner} comments(last:30){nodes{body createdAt}}}}}}"""
+
+
+def agent_option(f, name, what):
+    """The option of an agent field that matches name, ignoring case."""
+    for o in f.get("options", []):
+        if o["name"].lower() == (name or "").strip().lower():
+            return o["name"]
+    raise BoardError(f"{name!r} is not an option of the {what} field; options: {', '.join(o['name'] for o in f.get('options', []))}")
+
+
+def agent_field(meta, b, key):
+    f = meta["fields"].get(b[key])
+    if not f or f["type"] != "SINGLE_SELECT":
+        raise BoardError(f"the {b['name']} board has no single-select {b[key]!r} field; add it with board-setup")
+    return f
+
+
+def me_agent(f, what):
+    """This session's agent name, from BOARD_AGENT, checked against the field's options."""
+    name = os.environ.get("BOARD_AGENT")
+    if not name:
+        raise BoardError("set BOARD_AGENT to this agent's name, as it appears in the board's agent fields")
+    return agent_option(f, name, what)
+
+
+def signature(agent):
+    extra = os.environ.get("BOARD_SIGNATURE", "").strip()
+    return f"— {agent}" + (f" ({extra})" if extra else "")
+
+
+def ask(b, boards, ref, to, kind, text, force=False, log=print):
+    """Set the item's Responder to another agent and post a signed comment saying what's asked."""
+    if kind not in ASK_KINDS:
+        raise BoardError(f"ask takes a kind of {' or '.join(ASK_KINDS)}, not {kind!r}")
+    meta = fields(b)
+    f = agent_field(meta, b, "responder_field")
+    me, to = me_agent(f, b["responder_field"]), agent_option(f, to, b["responder_field"])
+    e = by_ref(snapshot(b)).get(ref)
+    if e is None:
+        raise BoardError(f"{ref} is not on the {b['name']} board")
+    held = e["fields"].get(b["responder_field"])
+    if held and held != to and not force:
+        raise BoardError(f"{ref} is already waiting on {held} (use --force to ask {to} instead)")
+    gql(M_SET, p=meta["project_id"], i=e["item_id"], f=f["id"], v=field_value(f, to))
+    body = f"<!-- board:ask from={me} to={to} kind={kind} -->\n**{to}**: {kind} requested. {text}\n\n{signature(me)}"
+    url = gql(M_COMMENT, s=e["issue_id"], b=body)["addComment"]["commentEdge"]["node"]["url"]
+    got = read_field(e["item_id"], b["responder_field"])
+    log(f"{ref}: {b['responder_field']} {to}, {kind} asked: {url}")
+    log(f"     read back: {b['responder_field']} {got!r} {'ok' if got == to else 'MISMATCH'}")
+    return APPLIED if got == to else FAILED
+
+
+def last_ask(comments, me):
+    """The newest ask marker addressed to me: (from, kind, text), or None."""
+    for c in reversed(comments):
+        m = MARK_RE.search(c["body"] or "")
+        if m and m.group(1) == "ask" and m.group(3).lower() == me.lower():
+            text = c["body"][m.end():].strip().split("\n\n")[0]
+            return m.group(2), m.group(4), text
+    return None
+
+
+def inbox(boards, log=print):
+    """Open items on every configured board whose Responder is this agent, read live."""
+    found, me = 0, None
+    for b in boards.values():
+        meta = fields(b)
+        f = meta["fields"].get(b["responder_field"])
+        if not f:
+            log(f"{b['name']}: no {b['responder_field']} field, skipped")
+            continue
+        me = me_agent(f, b["responder_field"])
+        q, after = f'{b["responder_field"]}:"{me}" is:open', None
+        while True:
+            page = gql("query($after:String,$q:String!){" + root(b, INBOX_Q) + "}", after=after,
+                       q=q)[b["owner_type"]]["projectV2"]["items"]
+            for n in page["nodes"]:
+                c = n["content"] or {}
+                if not c:
+                    continue
+                found += 1
+                a = last_ask(c["comments"]["nodes"], me)
+                log(f"{ref_of(c)}  {b['name']}  {a[1] if a else 'asked'} from {a[0] if a else '?'}  {c['title']}")
+                if a and a[2]:
+                    log(f"    {a[2]}")
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            after = page["pageInfo"]["endCursor"]
+    log(f"{found} item(s) waiting on {me or 'this agent'}")
+    return 0
+
+
 # ---------------------------------------------------------------- pull requests and releases
 
 def boards_holding(boards, repo):
@@ -1588,6 +1689,8 @@ COMMANDS = {
     "notes": ((2, 2), (), ()),
     "guard": ((1, 1), (), ()),
     "release": ((3, 3), (), ("--dry-run",)),
+    "ask": ((4, 99), (), ("--force",)),
+    "inbox": ((0, 0), (), ()),
 }
 
 
@@ -1698,6 +1801,10 @@ def main(argv):
             print(f'{x["at"]}  {x["kind"]:18} {x["by"]:12} {"STALE " if x["stale"] else ""}{x["value"]}')
     elif cmd == "guard":
         return guard(boards, a[0])
+    elif cmd == "ask":
+        return ask(board_cfg(boards, a[0]), boards, a[1], a[2], a[3], " ".join(a[4:]), force=o.get("--force", False))
+    elif cmd == "inbox":
+        return inbox(boards)
     elif cmd == "release":
         b = board_cfg(boards, a[0])
         return release(b, boards, a[1], a[2], dry_run=o.get("--dry-run", False))
