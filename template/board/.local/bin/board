@@ -18,7 +18,7 @@ the board whose "repos" list the current directory's repo.
                                                  blocked, ungroomed and claimed items, with the reason
   board claim    <board> <owner/repo#n> [--status-md PATH] [--force]
                                                  must be open, at Todo and not someone else's; sets In Progress,
-                                                 assigns you, adds the line under "What's in progress"
+                                                 assigns you, sets Agent, adds the line under "What's in progress"
   board finish   <board> <owner/repo#n> [--close] [--status-md PATH]
                                                  Done (Pending Release on a tag-release board once a closing
                                                  pull request merged), optionally closed; the line removed
@@ -30,6 +30,19 @@ the board whose "repos" list the current directory's repo.
                                                  request is open, Done (or Pending Release) after the last
   board release  <board> <owner/repo> <tag> [--dry-run]
                                                  Pending Release items whose merged pull requests are in the tag -> Done
+  board ask      <board> <item> <agent> review|question <text> [--force]
+                                                 set Responder to that agent and post a signed, marked comment;
+                                                 asking the operator also sends a review request or an @-mention
+  board answer   <board> <item> <text> [--verdict approve|changes] [--force]
+                                                 answer the asker (with a verdict: a comment review on the pull
+                                                 request first) and clear Responder
+  board handoff  <board> <item> <agent> <text> [--status-md PATH]
+                                                 make that agent the item's Agent; the STATUS.md line follows
+  board ack      <board> <item> [text]           mark a reply or handoff read, so it leaves your inbox
+  board inbox    [--agent NAME] [--json] [--since-hours N]
+                                                 what's waiting on you, read live from every board: asks, replies
+                                                 and handoffs on your items, and the account's notifications
+  board setup-agents <board> [--dry-run]         create Agent and Responder from the config's agents and operator
   board xrefs    <board>                         items whose xref_fields name another business
   board reset-fixture <board> [--dry-run]        put the test fixture back to its resting state
   board check    <board> <plan.json>             validate a plan and print the dry run; nothing is written
@@ -42,6 +55,16 @@ one file per board, written under a lock. Reads use a snapshot younger than fres
 A note records kind, text, by, at, and the issue's updatedAt; it reads as stale once the issue
 changes. Config: $BOARD_CONFIG, or $XDG_CONFIG_HOME/board/boards.json (default ~/.config/board).
 Needs `gh`, logged in with the project scope.
+
+Agents: every agent may act as one GitHub account; the Agent field (who owns an item) and the
+Responder field (who is asked to review or answer) tell them apart. Their options are the config's
+"agents" plus its "operator" ({"name", "login"}). A session names itself with BOARD_AGENT, and
+BOARD_MODEL and BOARD_SESSION complete the signature on its comments. Comments carry a marker,
+<!-- board:<ask|answer|verdict|handoff|ack> from=A to=B ... -->, which inbox reads: an item is waiting
+on you when you are its Responder, or when you are its Agent and the newest marker addressed to you
+is newer than your own last one. `claim` sets Agent and refuses an item another agent holds;
+`finish` clears Responder; `select` skips items an agent holds. Write agent names in bold: an
+@-mention notifies the GitHub user of that name.
 
 A plan is a JSON list of operations; an item is "owner/repo#n", or "$name" for an issue
 created earlier in the same plan with "as": "name".
@@ -114,7 +137,7 @@ DEFAULTS = {
     "freshness_hours": 24, "settle_seconds": 3, "guard_recheck_seconds": 15, "stale_days": 7, "review_over_items": 10,
     "fixture": {"label": "test-fixture", "title_prefix": "[Test fixture]", "clear": ["Priority", "Effort"]},
     "repos": [], "outside_hierarchy": [], "parent_optional": [],
-    "agent_field": "Agent", "responder_field": "Responder",
+    "agent_field": "Agent", "responder_field": "Responder", "agents": [], "operator": None,
 }
 
 
@@ -506,6 +529,9 @@ def select(b, snap, repo=None, label=None, count=1, claimed=claimed_refs, includ
              and (label is None or label in e["labels"])]
     claims = {}
     for e in cands:
+        if e["fields"].get(b["agent_field"]):
+            skipped.append((e["ref"], f"held by {e['fields'][b['agent_field']]}"))
+            continue
         if e.get("assignees"):
             skipped.append((e["ref"], f"assigned to {', '.join(e['assignees'])}"))
             continue
@@ -1357,13 +1383,14 @@ def in_progress_span(lines, path):
     return start, end
 
 
-def status_md_claim(path, ref, url, title):
+def status_md_claim(path, ref, url, title, by=None, session=None):
     lines = read_text(path).splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
     start, end = in_progress_span(lines, path)
     body = [i for i in range(start, end) if lines[i].strip()]
-    entry = f"- [{ref}]({url}) {title} — claimed {now().date().isoformat()}\n"
+    who = f" by {by}" + (f" (session {session})" if session else "") if by else ""
+    entry = f"- [{ref}]({url}) {title} — claimed {now().date().isoformat()}{who}\n"
     if body and re.match(r"^- (Nothing in flight|None)\b", lines[body[0]]):
         lines[body[0]] = entry
     elif body and lines[body[0]].startswith("- "):
@@ -1404,6 +1431,14 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
         others = [a for a in e.get("assignees", []) if a != gh.viewer()["login"]]
         if others:
             raise BoardError(f"{ref} is assigned to {', '.join(others)} (use --force to claim anyway)")
+    agent_f = snap["fields"].get(b["agent_field"])
+    agent, session = os.environ.get("BOARD_AGENT"), os.environ.get("BOARD_SESSION") or None
+    if agent_f and agent:
+        agent = agent_option(agent_f, agent, b["agent_field"])
+    if not finish and not force and agent_f:
+        holder = e["fields"].get(b["agent_field"])
+        if holder and holder != agent:
+            raise BoardError(f"{ref} is held by {holder} (use --force to claim anyway)")
     cross = owner_of(ref) != b["owner"]
     plan = []
     if finish and close and e["state"] == "OPEN":
@@ -1412,6 +1447,13 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
     done = st["pending"] if finish and b.get("release") == "tags" and merged else st["done"]
     plan.append({"op": "set_field", "item": ref, "field": "Status", "value": done if finish else st["claim"],
                  "cross_owner": cross})
+    if agent_f and not finish:
+        if agent:
+            plan.append({"op": "set_field", "item": ref, "field": b["agent_field"], "value": agent, "cross_owner": cross})
+        else:
+            log(f"{b['agent_field']} not set: BOARD_AGENT is unset")
+    if finish and e["fields"].get(b["responder_field"]) is not None:
+        plan.append({"op": "clear_field", "item": ref, "field": b["responder_field"], "cross_owner": cross})
     rc = apply_plan(b, boards, plan, approved=True, log=log)
     if rc in (APPLIED, SIDE_EFFECTS) and not finish:
         me = gh.viewer()
@@ -1425,7 +1467,7 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
         if finish:
             log(f"STATUS.md: removed {status_md_finish(status_md, e['url'])} line(s)")
         else:
-            status_md_claim(status_md, ref, e["url"], e["title"])
+            status_md_claim(status_md, ref, e["url"], e["title"], by=agent if agent_f else None, session=session)
             log(f"STATUS.md: claim recorded in {status_md}")
     return rc
 
@@ -1433,11 +1475,108 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
 # ---------------------------------------------------------------- agents
 
 M_COMMENT = "mutation($s:ID!,$b:String!){addComment(input:{subjectId:$s,body:$b}){commentEdge{node{id url}}}}"
+M_REVIEW = """mutation($p:ID!,$b:String!){addPullRequestReview(input:{pullRequestId:$p,body:$b,event:COMMENT}){
+  pullRequestReview{id url}}}"""
+M_REQUEST = "mutation($p:ID!,$u:[ID!]){requestReviews(input:{pullRequestId:$p,userIds:$u,union:true}){clientMutationId}}"
+M_FIELD = """mutation($p:ID!,$n:String!,$o:[ProjectV2SingleSelectFieldOptionInput!]){createProjectV2Field(input:{projectId:$p,
+  dataType:SINGLE_SELECT,name:$n,singleSelectOptions:$o}){projectV2Field{... on ProjectV2FieldCommon{id name}}}}"""
+COMMENTS = "comments(last:50){nodes{id url createdAt body}}"
+Q_THREAD = "query($i:ID!){node(id:$i){... on Issue{" + COMMENTS + "} ... on PullRequest{" + COMMENTS + "}}}"
+INBOX_Q = """items(first:50, after:$after, query:$q){pageInfo{hasNextPage endCursor} nodes{content{
+  ... on Issue{number title url repository{nameWithOwner} """ + COMMENTS + """}
+  ... on PullRequest{number title url repository{nameWithOwner} """ + COMMENTS + """}}}}"""
 ASK_KINDS = ("review", "question")
-MARK_RE = re.compile(r"<!-- board:(\w+) from=(\S+) to=(\S+)(?: kind=(\w+))? -->")
-INBOX_Q = """items(first:50, after:$after, query:$q){pageInfo{hasNextPage endCursor} nodes{id content{
-  ... on Issue{number title url repository{nameWithOwner} comments(last:30){nodes{body createdAt}}}
-  ... on PullRequest{number title url repository{nameWithOwner} comments(last:30){nodes{body createdAt}}}}}}"""
+VERDICTS = ("approve", "changes")
+MARK_RE = re.compile(r"<!-- board:(\w+)((?: [\w-]+=\S+)*) -->")
+
+
+def thread_of(nodes):
+    return [{"id": c["id"], "url": c["url"], "at": c["createdAt"], "body": c["body"] or ""} for c in nodes]
+
+
+class Hub:
+    """GitHub for the agent commands. The tests pass a fake with the same methods."""
+
+    def fields(self, b):
+        return fields(b)
+
+    def snapshot(self, b):
+        return snapshot(b)
+
+    def set_field(self, meta, item_id, name, value):
+        f = meta["fields"][name]
+        gql(M_SET, p=meta["project_id"], i=item_id, f=f["id"], v=field_value(f, value))
+
+    def clear_field(self, meta, item_id, name):
+        gql(M_CLEAR, p=meta["project_id"], i=item_id, f=meta["fields"][name]["id"])
+
+    def read_field(self, item_id, name):
+        return read_field(item_id, name)
+
+    def comment(self, subject_id, body):
+        return gql(M_COMMENT, s=subject_id, b=body)["addComment"]["commentEdge"]["node"]["url"]
+
+    def review(self, pr_id, body):
+        return gql(M_REVIEW, p=pr_id, b=body)["addPullRequestReview"]["pullRequestReview"]["url"]
+
+    def request_review(self, pr_id, login):
+        user = gql("query($l:String!){user(login:$l){id}}", l=login)["user"]
+        if not user:
+            raise BoardError(f"no GitHub user {login!r} (the config's operator login)")
+        gql(M_REQUEST, p=pr_id, u=[user["id"]])
+
+    def pr(self, ref):
+        d = GitHub().pr(ref)
+        return dict(id=d["id"], url=d["url"], state=d["state"], closes=[{"ref": x["ref"]} for x in d["closes"]])
+
+    def thread(self, subject_id):
+        node = gql(Q_THREAD, i=subject_id)["node"] or {}
+        return thread_of((node.get("comments") or {}).get("nodes", []))
+
+    def items(self, b, query):
+        out, after = [], None
+        while True:
+            page = gql("query($after:String,$q:String!){" + root(b, INBOX_Q) + "}", after=after,
+                       q=query)[b["owner_type"]]["projectV2"]["items"]
+            for n in page["nodes"]:
+                c = n["content"] or {}
+                if c:
+                    out.append({"ref": ref_of(c), "title": c["title"], "url": c["url"],
+                                "comments": thread_of(c["comments"]["nodes"])})
+            if not page["pageInfo"]["hasNextPage"]:
+                return out
+            after = page["pageInfo"]["endCursor"]
+
+    def notifications(self, since):
+        r = subprocess.run(["gh", "api", "--paginate", f"notifications?participating=true&since={since}"],
+                           capture_output=True, text=True)
+        if r.returncode:
+            raise BoardError(f"gh api notifications: {r.stderr.strip()}")
+        out = []
+        for chunk in re.findall(r"\[.*?\](?=\[|\s*$)", r.stdout.strip(), re.S) or [r.stdout]:
+            for n in json.loads(chunk or "[]"):
+                m = re.search(r"/repos/([^/]+/[^/]+)/(?:issues|pulls)/(\d+)$", (n["subject"] or {}).get("url") or "")
+                ref = f"{m.group(1)}#{m.group(2)}" if m else None
+                url = ("https://github.com/" + ref.replace("#", "/issues/")) if ref else n["repository"]["html_url"]
+                out.append({"id": n["id"], "reason": n["reason"], "title": n["subject"]["title"], "ref": ref,
+                            "url": url, "at": n["updated_at"]})
+        return out
+
+    def create_field(self, project_id, name, options):
+        gql(M_FIELD, p=project_id, n=name, o=[{"name": x, "color": "GRAY", "description": ""} for x in options])
+
+    def set_options(self, field, options):
+        gql(M_OPTIONS, f=field["id"], o=options)
+
+
+def operator_of(b):
+    """(option name, GitHub login) of the configured operator, or (None, None)."""
+    op = b.get("operator")
+    if not op:
+        return None, None
+    if isinstance(op, str):
+        return op, op
+    return op.get("name") or op.get("login"), op.get("login")
 
 
 def agent_option(f, name, what):
@@ -1451,83 +1590,316 @@ def agent_option(f, name, what):
 def agent_field(meta, b, key):
     f = meta["fields"].get(b[key])
     if not f or f["type"] != "SINGLE_SELECT":
-        raise BoardError(f"the {b['name']} board has no single-select {b[key]!r} field; add it with board-setup")
+        raise BoardError(f"the {b['name']} board has no single-select {b[key]!r} field; add it with `board setup-agents {b['name']}`")
     return f
 
 
-def me_agent(f, what):
-    """This session's agent name, from BOARD_AGENT, checked against the field's options."""
-    name = os.environ.get("BOARD_AGENT")
+def whoami(name=None):
+    """This session's agent name and session id, from BOARD_AGENT and BOARD_SESSION."""
+    name = name or os.environ.get("BOARD_AGENT")
     if not name:
         raise BoardError("set BOARD_AGENT to this agent's name, as it appears in the board's agent fields")
-    return agent_option(f, name, what)
+    return name, os.environ.get("BOARD_SESSION") or None
 
 
 def signature(agent):
-    extra = os.environ.get("BOARD_SIGNATURE", "").strip()
-    return f"— {agent}" + (f" ({extra})" if extra else "")
+    parts = [agent] + [os.environ[k] for k in ("BOARD_MODEL",) if os.environ.get(k)]
+    if os.environ.get("BOARD_SESSION"):
+        parts.append("session " + os.environ["BOARD_SESSION"])
+    return "— " + " · ".join(parts)
 
 
-def ask(b, boards, ref, to, kind, text, force=False, log=print):
-    """Set the item's Responder to another agent and post a signed comment saying what's asked."""
+def mark(what, frm, to, **kv):
+    extra = "".join(f" {k}={v}" for k, v in kv.items() if v)
+    return f"<!-- board:{what} from={frm} to={to}{extra} -->"
+
+
+def markers(comments):
+    """Board markers in a thread, oldest first: dicts of kind, from, to, the other keys (an ask's
+    kind as "ask"), the comment and its first paragraph after the marker."""
+    out = []
+    for c in comments:
+        m = MARK_RE.search(c["body"] or "")
+        if m:
+            kv = dict(x.split("=", 1) for x in m.group(2).split())
+            if "kind" in kv:  # an ask's kind (review or question) sits beside the marker's own kind
+                kv["ask"] = kv.pop("kind")
+            text = c["body"][m.end():].strip().split("\n\n")[0]
+            out.append(dict(kv, kind=m.group(1), comment=c, text=text))
+    return out
+
+
+def writable(b):
+    if b.get("read_only"):
+        raise BoardError(f"the {b['name']} board is read-only")
+
+
+def resolve(b, s, ref, hub):
+    """The board entry an agent command acts on: the item itself, or for a pull request that is not
+    on the board, the issue it closes that is."""
+    idx = {e.get("ref") or e.get("pr_ref"): e for e in s["items"] if not e.get("archived")}
+    if ref in idx:
+        return idx[ref]
+    if REF_RE.match(ref):
+        try:
+            pr = hub.pr(ref)
+        except BoardError:
+            pr = None
+        hits = [idx[x["ref"]] for x in (pr or {}).get("closes", []) if x["ref"] in idx]
+        if len(hits) == 1:
+            return hits[0]
+    raise BoardError(f"{ref} is not on the {b['name']} board")
+
+
+def subject_of(e):
+    return e.get("issue_id") or e.get("pr_id")
+
+
+def open_prs_of(e):
+    if e.get("kind") == "PULL_REQUEST":
+        return [e["pr_ref"]] if e["state"] == "OPEN" else []
+    return [p["ref"] for p in e.get("prs", []) if p["state"] == "OPEN"]
+
+
+def one_open_pr(e, hub, why):
+    prs = open_prs_of(e)
+    if not prs:
+        raise BoardError(f"{e.get('ref') or e.get('pr_ref')} has no open pull request to {why}")
+    if len(prs) > 1:
+        raise BoardError(f"{e['ref']} has several open pull requests ({', '.join(prs)}); name the one to {why}")
+    if e.get("kind") == "PULL_REQUEST":
+        return {"id": e["pr_id"], "url": e["url"]}
+    return hub.pr(prs[0])
+
+
+def set_and_check(hub, meta, e, name, value, log):
+    if value is None:
+        hub.clear_field(meta, e["item_id"], name)
+    else:
+        hub.set_field(meta, e["item_id"], name, value)
+    got = hub.read_field(e["item_id"], name)
+    log(f"     read back: {name} {got!r} {'ok' if got == value else 'MISMATCH'}")
+    return got == value
+
+
+def ask(b, ref, to, kind, text, hub=None, force=False, log=print):
+    """Set the item's Responder to an agent (or the operator) and post a signed, marked comment."""
+    hub = hub or Hub()
+    writable(b)
     if kind not in ASK_KINDS:
         raise BoardError(f"ask takes a kind of {' or '.join(ASK_KINDS)}, not {kind!r}")
-    meta = fields(b)
+    if foreign_mentions(text, owner_of(ref)):
+        raise BoardError(f"the text mentions another owner's issue ({', '.join(foreign_mentions(text, owner_of(ref)))}); "
+                         "a comment would cross-reference it")
+    meta = hub.fields(b)
     f = agent_field(meta, b, "responder_field")
-    me, to = me_agent(f, b["responder_field"]), agent_option(f, to, b["responder_field"])
-    e = by_ref(snapshot(b)).get(ref)
-    if e is None:
-        raise BoardError(f"{ref} is not on the {b['name']} board")
+    me, session = whoami()
+    me, to = agent_option(f, me, b["responder_field"]), agent_option(f, to, b["responder_field"])
+    e = resolve(b, hub.snapshot(b), ref, hub)
     held = e["fields"].get(b["responder_field"])
     if held and held != to and not force:
         raise BoardError(f"{ref} is already waiting on {held} (use --force to ask {to} instead)")
-    gql(M_SET, p=meta["project_id"], i=e["item_id"], f=f["id"], v=field_value(f, to))
-    body = f"<!-- board:ask from={me} to={to} kind={kind} -->\n**{to}**: {kind} requested. {text}\n\n{signature(me)}"
-    url = gql(M_COMMENT, s=e["issue_id"], b=body)["addComment"]["commentEdge"]["node"]["url"]
-    got = read_field(e["item_id"], b["responder_field"])
+    op_name, op_login = operator_of(b)
+    to_operator = op_name is not None and to.lower() == op_name.lower()
+    lines = [f"**{to}**: {kind} requested. {text}".rstrip()]
+    if kind == "review" and e.get("kind") != "PULL_REQUEST" and open_prs_of(e):
+        lines.append("Pull request: " + ", ".join(p["url"] for p in e["prs"] if p["state"] == "OPEN"))
+    if to_operator and kind == "question" and op_login:
+        lines.append(f"@{op_login}")
+    if to_operator and kind == "review":
+        pr = one_open_pr(e, hub, "request the review on")
+        hub.request_review(pr["id"], op_login)
+        log(f"{ref}: review requested from {op_login} on {pr['url']}")
+    ok = set_and_check(hub, meta, e, b["responder_field"], to, log)
+    url = hub.comment(subject_of(e), mark("ask", me, to, kind=kind, session=session) + "\n" + "\n\n".join(lines)
+                      + "\n\n" + signature(me))
     log(f"{ref}: {b['responder_field']} {to}, {kind} asked: {url}")
-    log(f"     read back: {b['responder_field']} {got!r} {'ok' if got == to else 'MISMATCH'}")
-    return APPLIED if got == to else FAILED
+    return APPLIED if ok else FAILED
 
 
-def last_ask(comments, me):
-    """The newest ask marker addressed to me: (from, kind, text), or None."""
-    for c in reversed(comments):
-        m = MARK_RE.search(c["body"] or "")
-        if m and m.group(1) == "ask" and m.group(3).lower() == me.lower():
-            text = c["body"][m.end():].strip().split("\n\n")[0]
-            return m.group(2), m.group(4), text
+def answer(b, ref, text, hub=None, verdict=None, force=False, log=print):
+    """Answer what this agent was asked: an optional verdict review on the pull request, a marked
+    comment to the asker, and Responder cleared."""
+    hub = hub or Hub()
+    writable(b)
+    if verdict is not None and verdict not in VERDICTS:
+        raise BoardError(f"--verdict takes approve or changes, not {verdict!r}")
+    meta = hub.fields(b)
+    f = agent_field(meta, b, "responder_field")
+    me, session = whoami()
+    me = agent_option(f, me, b["responder_field"])
+    e = resolve(b, hub.snapshot(b), ref, hub)
+    held = e["fields"].get(b["responder_field"])
+    if held != me and not force:
+        raise BoardError(f"{ref} is waiting on {held or 'no one'}, not {me} (use --force to answer anyway)")
+    asks = [m for m in markers(hub.thread(subject_of(e))) if m["kind"] == "ask" and m.get("to", "").lower() == me.lower()]
+    asker = asks[-1]["from"] if asks else (e["fields"].get(b["agent_field"]) or "the owner")
+    lines = [f"**{asker}**: " + (f"verdict {verdict}. " if verdict else "answered. ") + text]
+    if verdict:
+        pr = one_open_pr(e, hub, "review")
+        word = {"approve": "approve", "changes": "changes requested"}[verdict]
+        rurl = hub.review(pr["id"], mark("verdict", me, asker, verdict=verdict, session=session)
+                          + f"\n**Verdict: {word}**\n\n{text}\n\n{signature(me)}")
+        lines.append(f"Review: {rurl}")
+        log(f"{ref}: verdict {verdict} posted: {rurl}")
+    url = hub.comment(subject_of(e), mark("answer", me, asker, verdict=verdict, session=session) + "\n"
+                      + "\n\n".join(lines) + "\n\n" + signature(me))
+    ok = set_and_check(hub, meta, e, b["responder_field"], None, log)
+    log(f"{ref}: answered {asker}: {url}")
+    return APPLIED if ok else FAILED
+
+
+def handoff(b, ref, to, text, hub=None, status_md=None, log=print):
+    """Make another agent the item's Agent, with a marked comment and, given one, the STATUS.md line."""
+    hub = hub or Hub()
+    writable(b)
+    if status_md:
+        in_progress_span(read_text(status_md).splitlines(keepends=True), status_md)
+    meta = hub.fields(b)
+    f = agent_field(meta, b, "agent_field")
+    me, session = whoami()
+    me, to = agent_option(f, me, b["agent_field"]), agent_option(f, to, b["agent_field"])
+    e = resolve(b, hub.snapshot(b), ref, hub)
+    ok = set_and_check(hub, meta, e, b["agent_field"], to, log)
+    url = hub.comment(subject_of(e), mark("handoff", me, to, session=session) + f"\n**{to}**: handed over. {text}\n\n"
+                      + signature(me))
+    log(f"{ref}: {b['agent_field']} {to}, handed over: {url}")
+    if ok and status_md:
+        status_md_finish(status_md, e["url"])
+        status_md_claim(status_md, e.get("ref") or e.get("pr_ref"), e["url"], e["title"], by=to)
+        log(f"STATUS.md: the line now names {to}")
+    return APPLIED if ok else FAILED
+
+
+def ack(b, ref, text="", hub=None, log=print):
+    """A marked comment saying this agent has read what's on the item, which takes it off its inbox."""
+    hub = hub or Hub()
+    writable(b)
+    me, session = whoami()
+    e = resolve(b, hub.snapshot(b), ref, hub)
+    url = hub.comment(subject_of(e), mark("ack", me, me, session=session) + (f"\n{text}" if text else "")
+                      + "\n\n" + signature(me))
+    log(f"{ref}: acknowledged: {url}")
+    return APPLIED
+
+
+def entry(b, it, m):
+    """One inbox line: the item and the marker that put it there (None for a bare Responder)."""
+    if m is None:
+        return {"id": it["ref"], "board": b["name"], "ref": it["ref"], "kind": "ask", "detail": "", "from": None,
+                "text": "", "title": it["title"], "url": it["url"], "at": None}
+    detail = m.get("ask") if m["kind"] == "ask" else m.get("verdict")
+    return {"id": m["comment"]["id"], "board": b["name"], "ref": it["ref"], "kind": m["kind"], "detail": detail or "",
+            "from": m.get("from"), "text": m["text"], "title": it["title"], "url": m["comment"]["url"], "at": m["comment"]["at"]}
+
+
+def pending_for(me, comments):
+    """The newest marker addressed to me from another agent, if it is newer than my own last one."""
+    ms = markers(comments)
+    mine = [i for i, m in enumerate(ms) if m.get("from", "").lower() == me.lower()]
+    last_mine = mine[-1] if mine else -1
+    for i in range(len(ms) - 1, last_mine, -1):
+        m = ms[i]
+        if m.get("to", "").lower() == me.lower() and m.get("from", "").lower() != me.lower():
+            return m
     return None
 
 
-def inbox(boards, log=print):
-    """Open items on every configured board whose Responder is this agent, read live."""
-    found, me = 0, None
+def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print, now_=None):
+    """What is waiting on this agent, read live from every board: asks where it is Responder,
+    replies and handoffs on items where it is Agent that it hasn't answered, and the account's
+    notifications on its items or on no board. Exit 1 when a board couldn't be read."""
+    hub = hub or Hub()
+    me, _ = whoami(agent)
+    entries, seen, failed, mine, on_boards = [], set(), 0, set(), set()
     for b in boards.values():
-        meta = fields(b)
-        f = meta["fields"].get(b["responder_field"])
-        if not f:
-            log(f"{b['name']}: no {b['responder_field']} field, skipped")
+        try:
+            meta = hub.fields(b)
+            if b["responder_field"] not in meta["fields"]:
+                log(f"{b['name']}: no {b['responder_field']} field, skipped")
+                continue
+            asked = hub.items(b, f'{b["responder_field"]}:"{me}" is:open')
+            owned = hub.items(b, f'{b["agent_field"]}:"{me}" is:open') if b["agent_field"] in meta["fields"] else []
+            s = hub.snapshot(b)
+            on_boards |= {e.get("ref") or e.get("pr_ref") for e in s["items"]}
+        except BoardError as ex:
+            log(f"{b['name']}: {ex}")
+            failed += 1
             continue
-        me = me_agent(f, b["responder_field"])
-        q, after = f'{b["responder_field"]}:"{me}" is:open', None
-        while True:
-            page = gql("query($after:String,$q:String!){" + root(b, INBOX_Q) + "}", after=after,
-                       q=q)[b["owner_type"]]["projectV2"]["items"]
-            for n in page["nodes"]:
-                c = n["content"] or {}
-                if not c:
+        for it, is_ask in [(x, True) for x in asked] + [(x, False) for x in owned]:
+            mine.add(it["ref"])
+            if it["ref"] in seen:
+                continue
+            ms = markers(it["comments"])
+            if is_ask:
+                m = next((x for x in reversed(ms) if x["kind"] == "ask" and x.get("to", "").lower() == me.lower()), None)
+            else:
+                m = pending_for(me, it["comments"])
+                if m is None:
                     continue
-                found += 1
-                a = last_ask(c["comments"]["nodes"], me)
-                log(f"{ref_of(c)}  {b['name']}  {a[1] if a else 'asked'} from {a[0] if a else '?'}  {c['title']}")
-                if a and a[2]:
-                    log(f"    {a[2]}")
-            if not page["pageInfo"]["hasNextPage"]:
-                break
-            after = page["pageInfo"]["endCursor"]
-    log(f"{found} item(s) waiting on {me or 'this agent'}")
-    return 0
+            seen.add(it["ref"])
+            entries.append(entry(b, it, m))
+    now_ = now_ or now()
+    since = (now_ - dt.timedelta(hours=since_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    notes = []
+    try:
+        for n in hub.notifications(since):
+            if n["ref"] in mine or n["ref"] not in on_boards:
+                notes.append(n)
+    except BoardError as ex:
+        log(f"notifications: {ex}")
+        failed += 1
+    if as_json:
+        log(json.dumps({"agent": me, "items": entries, "notifications": notes}, indent=1))
+        return 1 if failed else 0
+    for x in entries:
+        label = x["detail"] if x["kind"] == "ask" and x["detail"] else x["kind"] + (f" ({x['detail']})" if x["detail"] else "")
+        log(f"{x['ref']}  {x['board']}  {label} from {x['from'] or '?'}  {x['title']}")
+        if x["text"]:
+            log(f"    {x['text']}")
+        log(f"    {x['url']}")
+    log(f"{len(entries)} item(s) waiting on {me}")
+    for n in notes:
+        log(f"notification  {n['reason']}  {n['ref'] or ''}  {n['title']}  {n['url']}")
+    return 1 if failed else 0
+
+
+def setup_agents(b, hub=None, dry_run=False, log=print):
+    """Create the Agent and Responder fields on a board, with the config's agents and operator as
+    options, or add the options a field is missing, keeping the rest and their ids."""
+    hub = hub or Hub()
+    writable(b)
+    op_name, _ = operator_of(b)
+    want = list(b.get("agents") or []) + ([op_name] if op_name else [])
+    if not b.get("agents"):
+        raise BoardError(f'the config lists no "agents" for the {b["name"]} board; add them (and an "operator") first')
+    meta, did = hub.fields(b), 0
+    for key in ("agent_field", "responder_field"):
+        name, f = b[key], meta["fields"].get(b[key])
+        if f is None:
+            log(f"{b['name']}: create {name} with {', '.join(want)}")
+            if not dry_run:
+                hub.create_field(meta["project_id"], name, want)
+            did += 1
+            continue
+        if f["type"] != "SINGLE_SELECT":
+            raise BoardError(f"{b['name']}: {name} exists but is not a single-select field")
+        have = {o["name"] for o in f["options"]}
+        add = [x for x in want if x not in have]
+        if add:
+            log(f"{b['name']}: add {', '.join(add)} to {name}")
+            if not dry_run:
+                hub.set_options(f, [dict(o) for o in f["options"]] + [{"name": x, "color": "GRAY", "description": ""} for x in add])
+            did += 1
+    if not did:
+        log(f"{b['name']}: {b['agent_field']} and {b['responder_field']} already have every agent")
+        return APPLIED
+    if dry_run:
+        return APPLIED
+    after = hub.fields(b)["fields"]
+    ok = all(set(want) <= {o["name"] for o in (after.get(b[k]) or {}).get("options", [])} for k in ("agent_field", "responder_field"))
+    log(f"     read back: {b['agent_field']} and {b['responder_field']} {'ok' if ok else 'MISMATCH'}")
+    return APPLIED if ok else FAILED
 
 
 # ---------------------------------------------------------------- pull requests and releases
@@ -1661,7 +2033,7 @@ def reset_fixture_plan(b, snap):
             plan.append({"op": "set_field", "item": e["ref"], "field": "Status", "value": rest_status})
         if not rest_status and e["fields"].get("Status") is not None:
             plan.append({"op": "clear_field", "item": e["ref"], "field": "Status"})
-        for f in fx.get("clear", []):
+        for f in list(fx.get("clear", [])) + [x for x in (b["agent_field"], b["responder_field"]) if x not in fx.get("clear", [])]:
             if e["fields"].get(f) is not None:
                 plan.append({"op": "clear_field", "item": e["ref"], "field": f})
     return plan
@@ -1690,7 +2062,11 @@ COMMANDS = {
     "guard": ((1, 1), (), ()),
     "release": ((3, 3), (), ("--dry-run",)),
     "ask": ((4, 99), (), ("--force",)),
-    "inbox": ((0, 0), (), ()),
+    "answer": ((3, 99), ("--verdict",), ("--force",)),
+    "handoff": ((4, 99), ("--status-md",), ()),
+    "ack": ((2, 99), (), ()),
+    "inbox": ((0, 0), ("--agent", "--since-hours"), ("--json",)),
+    "setup-agents": ((1, 1), (), ("--dry-run",)),
 }
 
 
@@ -1802,9 +2178,18 @@ def main(argv):
     elif cmd == "guard":
         return guard(boards, a[0])
     elif cmd == "ask":
-        return ask(board_cfg(boards, a[0]), boards, a[1], a[2], a[3], " ".join(a[4:]), force=o.get("--force", False))
+        return ask(board_cfg(boards, a[0]), a[1], a[2], a[3], " ".join(a[4:]), force=o.get("--force", False))
+    elif cmd == "answer":
+        return answer(board_cfg(boards, a[0]), a[1], " ".join(a[2:]), verdict=o.get("--verdict"), force=o.get("--force", False))
+    elif cmd == "handoff":
+        return handoff(board_cfg(boards, a[0]), a[1], a[2], " ".join(a[3:]), status_md=o.get("--status-md"))
+    elif cmd == "ack":
+        return ack(board_cfg(boards, a[0]), a[1], " ".join(a[2:]))
     elif cmd == "inbox":
-        return inbox(boards)
+        return inbox({n: b for n, b in boards.items()}, agent=o.get("--agent"), as_json=o.get("--json", False),
+                     since_hours=int(o.get("--since-hours", "72")))
+    elif cmd == "setup-agents":
+        return setup_agents(board_cfg(boards, a[0]), dry_run=o.get("--dry-run", False))
     elif cmd == "release":
         b = board_cfg(boards, a[0])
         return release(b, boards, a[1], a[2], dry_run=o.get("--dry-run", False))

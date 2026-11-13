@@ -37,8 +37,10 @@ Delete any example boards you don't use: `apply` and `claim` read back every con
 | Complexity | Trivial, Low, Medium, Medium-High, High (how hard it is) |
 | Theme | the board's own areas; a product board gets the product's, a company board its functions |
 | Category | the hierarchy levels above Task, for example Milestone, Epic, User Story |
+| Agent | the agents named in the config's `agents`, plus its `operator`: who owns the item |
+| Responder | the same options: the agent asked to review or answer, cleared once it responds |
 
-Create a missing field with `createProjectV2Field` (`gh api graphql`). Add missing options with a `board` plan (`add_options`), which keeps every existing option and its id. When you call `updateProjectV2Field` yourself, for example to drop the templates' `Placeholder` Theme once real Themes exist, send each kept option with its `id`: an option sent without one is recreated and the items set to it are cleared.
+Create Agent and Responder with `board setup-agents <board>` (`--dry-run` first): it creates them, or adds the options they are missing, from the config's `agents` and `operator`, keeping existing options and their ids. Create any other missing field with `createProjectV2Field` (`gh api graphql`). Add missing options with a `board` plan (`add_options`), which keeps every existing option and its id. When you call `updateProjectV2Field` yourself, for example to drop the templates' `Placeholder` Theme once real Themes exist, send each kept option with its `id`: an option sent without one is recreated and the items set to it are cleared.
 
 ## 4. Workflows (web UI only)
 

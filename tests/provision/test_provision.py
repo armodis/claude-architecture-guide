@@ -46,6 +46,8 @@ class FakeGH:
             b = next(b for bs in self.boards.values() for b in bs if b["id"] == v["p"])
             fields = [{"id": "F_cat", "name": "Category", "options": [{"id": f"c{i}", "name": n, "color": "GRAY", "description": ""} for i, n in enumerate(b["levels"])]},
                       {"id": "F_theme", "name": "Theme", "options": [{"id": f"t{i}", "name": n, "color": "GRAY", "description": ""} for i, n in enumerate(b["themes"])]}]
+            fields += [{"id": f"F_{n}", "name": n, "options": [{"id": f"{n}{i}", "name": o, "color": "GRAY", "description": ""} for i, o in enumerate(opts)]}
+                       for n, opts in b.get("agent_fields", {}).items()]
             return {"node": {"number": b["number"], "url": f"https://x/{b['number']}",
                              "repositories": {"nodes": [{"nameWithOwner": r} for r in b["repos"]]},
                              "workflows": {"nodes": self.workflows}, "fields": {"nodes": fields}}}
@@ -53,12 +55,18 @@ class FakeGH:
             self.writes.append(("link", v["p"], v["r"]))
             self.board_by_id(v["p"])["repos"].append(v["r"][2:])
             return {}
+        if "createProjectV2Field" in q:
+            self.writes.append(("field", v["n"], [o["name"] for o in v["o"]]))
+            self.board_by_id(v["p"]).setdefault("agent_fields", {})[v["n"]] = [o["name"] for o in v["o"]]
+            return {}
         if "updateProjectV2Field" in q:
             self.writes.append(("options", v["f"], v["o"]))
             for bs in self.boards.values():
                 for b in bs:
                     if v["f"] == "F_theme":
                         b["themes"] = [o["name"] for o in v["o"]]
+                    elif v["f"][2:] in b.get("agent_fields", {}):
+                        b["agent_fields"][v["f"][2:]] = [o["name"] for o in v["o"]]
             return {}
         raise AssertionError(f"unexpected query: {q[:60]}")
 
@@ -244,6 +252,30 @@ class ReviewCases(unittest.TestCase):
         self.assertEqual(code, 0, log)
         opts = next(w[2] for w in gh.writes if w[0] == "options")
         self.assertEqual([o["name"] for o in opts], ["Data", "App"])
+
+    def test_agent_fields_are_created_from_the_board_configs_agents_and_operator(self):
+        with open(self.cfgpath, "w") as f:
+            json.dump({"defaults": {"agents": ["alpha", "beta"], "operator": {"name": "Pat", "login": "pat-example"}},
+                       "boards": {}}, f)
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"],
+                 "agent_fields": {"Agent": ["alpha"]}}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertEqual(code, 0, log)
+        self.assertIn(("field", "Responder", ["alpha", "beta", "Pat"]), gh.writes)
+        added = next(w[2] for w in gh.writes if w[0] == "options" and w[1] == "F_Agent")
+        self.assertEqual([o["name"] for o in added], ["alpha", "beta", "Pat"])
+        self.assertEqual(added[0]["id"], "Agent0")
+        self.assertEqual(board["agent_fields"], {"Agent": ["alpha", "beta", "Pat"], "Responder": ["alpha", "beta", "Pat"]})
+
+    def test_without_agents_in_the_config_no_agent_fields_are_made(self):
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        code, log = run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertFalse(any(w[0] == "field" for w in gh.writes))
+        self.assertIn("no Agent and Responder fields", log)
 
     def test_a_config_entry_for_another_project_is_reported(self):
         board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}

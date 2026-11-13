@@ -630,11 +630,11 @@ This pattern saves significant manual configuration and ensures consistency acro
 
 ## Concurrency & Claiming
 
-Multiple agents reading the same backlog (parallel local sessions, autonomous workers, scheduled jobs) need a way to avoid picking up the same work. The architecture uses a **two-layer claim** that reuses what's already there — no new fields, no bot accounts.
+Multiple agents reading the same backlog (parallel local sessions, autonomous workers, scheduled jobs, agents in other harnesses) need a way to avoid picking up the same work. The architecture uses a **two-layer claim**: the board's Status and Agent fields, and the repo's STATUS.md.
 
 **Layer 1 — Lock signal (board Status):**
 
-The agent's first action when starting work on an issue is to flip the board Status from `Todo` → `In Progress` via `updateProjectV2ItemFieldValue`. Other agents read Status before claiming and skip anything not in `Todo`. This is the queryable, board-visible lock.
+The agent's first action when starting work on an issue is `board claim`, which flips the board Status from `Todo` → `In Progress` and sets the **Agent** field to the claiming agent. Other agents read Status and Agent before claiming and skip anything not in `Todo` or held by another agent. This is the queryable, board-visible lock. Agent stands in for the assignee because every agent can act as one GitHub account: the assignee names the account, and Agent names which agent holds the work.
 
 **Layer 2 — Traceability (STATUS.md):**
 
@@ -643,8 +643,8 @@ The session adds the issue to its repo's `STATUS.md` under a "What's in progress
 ```markdown
 ## What's in progress
 
-- [acme/planning#176](https://github.com/acme/planning/issues/176) Audit-Reconcile — claimed 2026-05-28
-- [acme/planning#180](https://github.com/acme/planning/issues/180) PR-title citations — claimed 2026-05-28
+- [acme/planning#176](https://github.com/acme/planning/issues/176) Audit-Reconcile — claimed 2026-05-28 by claude (session 4f2a…)
+- [acme/planning#180](https://github.com/acme/planning/issues/180) PR-title citations — claimed 2026-05-28 by codex
 ```
 
 When the work lands (PR merged, issue closed), the session moves the entry from "What's in progress" to "What just happened" and commits.
@@ -666,6 +666,48 @@ When the work lands (PR merged, issue closed), the session moves the entry from 
 **Stale claims:** if an agent dies mid-task, Status stays at `In Progress` with no PR landing. The simplest recovery is a periodic board-hygiene pass (e.g., a `project-sync` skill) that surfaces stuck items and offers to revert them. Threshold is workload-dependent.
 
 **Race window:** the gap between read and write is tiny and accepted. At handful-of-agents scale this is acceptable noise — the cost of strict locking (a distributed lock service, optimistic concurrency tokens) outweighs the cost of an occasional double-claim. Add stricter coordination only if it becomes a real problem.
+
+### Working across agents and harnesses
+
+Any number of agent sessions, from any harness or model provider, coordinate through the board, issues, pull requests and STATUS.md, with commands every harness can run. Nothing depends on one harness's own messaging.
+
+**Identity.** The agents share one GitHub machine account, and the operator keeps their own. GitHub's terms allow one free machine account per person, and a paid account per agent family buys nothing an agent uses. Each harness's environment carries the agent's identity:
+
+- `GH_CONFIG_DIR`: a `gh` login folder for the machine account, so the token stays out of committed settings;
+- `GIT_AUTHOR_*` and `GIT_COMMITTER_*`: the machine account's name and noreply address;
+- `BOARD_AGENT`, `BOARD_MODEL` and `BOARD_SESSION`: the names `board` signs with.
+
+The operator's own terminal sets none of these, so it stays the operator.
+
+**Two fields** on every board, created by `board setup-agents` (or `provision.py`) from two keys you add to the board config's `defaults`:
+
+```json
+"agents": ["claude", "codex"],
+"operator": {"name": "Your Name", "login": "your-github-login"}
+```
+
+| Field | Means | Set by | Cleared by |
+|---|---|---|---|
+| Agent | who owns the item | `claim`, `handoff` | kept as the record after `finish` |
+| Responder | who is asked to review or answer | `ask` | `answer`, `finish` |
+
+**The exchange.** Each step posts a signed comment carrying a marker (`<!-- board:ask from=claude to=codex kind=review -->`), which `board inbox` reads:
+
+```
+claude:  board claim . acme/app#12 --status-md STATUS.md
+claude:  (opens a pull request that closes #12)
+claude:  board ask . acme/app#12 codex review "Ready for review."
+codex:   board inbox                  → acme/app#12  review from claude
+codex:   board answer . acme/app#12 --verdict approve "Reads right; tests pass."
+claude:  board inbox                  → acme/app#12  answer (approve) from codex
+claude:  (merges) board finish . acme/app#12 --status-md STATUS.md
+```
+
+**Reviews between agents.** One account can't approve its own pull requests, so an agent's review is a comment review that opens with a verdict line (`**Verdict: approve**` or `**Verdict: changes requested**`). A pull request merges after another agent's approve verdict or the operator's approval. GitHub can't enforce that rule on a Free plan's private repos, so agents follow it by instruction. Agents ask the operator through GitHub's own review request, and the operator's comments reach the machine account's notifications, which the inbox shows.
+
+**Waking an agent.** Agents run `board inbox` at session start and between tasks. `board inbox --agent <name> --json` gives a poller one entry per waiting marker, keyed by its comment, so a local dispatcher can start or nudge the agent named.
+
+**Agent names** like `claude` or `codex` are often real GitHub users, so they are written in bold, not as @-mentions.
 
 **What's not covered here:** file-level conflicts (two agents editing the same file) — out of scope for this design; git handles it via merge conflicts.
 

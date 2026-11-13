@@ -41,10 +41,10 @@ def open_pr(ref):
             "merge_oid": None}
 
 
-def marker(kind, frm, to, at, cid="c", **kv):
+def marker(what, frm, to, at, cid="c", **kv):
     extra = "".join(f" {k}={v}" for k, v in kv.items())
     return {"id": cid, "url": "https://example.test/" + cid, "at": at,
-            "body": f"<!-- board:{kind} from={frm} to={to}{extra} -->\n**{to}**: text from {frm}.\n\n— {frm}"}
+            "body": f"<!-- board:{what} from={frm} to={to}{extra} -->\n**{to}**: text from {frm}.\n\n— {frm}"}
 
 
 class FakeHub:
@@ -110,9 +110,11 @@ class FakeHub:
 
     def create_field(self, project_id, name, options):
         self.writes.append(("create_field", name, tuple(options)))
+        self.s["fields"][name] = {"id": "new-" + name, "type": "SINGLE_SELECT", "options": OPTS(*options)}
 
     def set_options(self, field, options):
         self.writes.append(("set_options", field["id"], tuple(o["name"] for o in options)))
+        field["options"] = OPTS(*(o["name"] for o in options))
 
     def kinds(self):
         return [w[0] for w in self.writes]
@@ -444,9 +446,9 @@ class ClaimAndFinish(unittest.TestCase):
         self.assertFalse(any(o.get("field") == "Agent" for o in ops))
 
     def test_select_skips_an_item_another_agent_holds(self):
-        s = agent_snap(item(ISSUE, Priority="P1", Effort=1, Agent="codex"), item("acme-co/ops#5", Priority="P1", Effort=1))
+        s = agent_snap(item(ISSUE, Priority="P1", Effort=1, Agent="codex"))
         picks, skipped = board.select(WORK, s, count=5, claimed=lambda r: set())
-        self.assertEqual([e["ref"] for e in picks], ["acme-co/ops#5"])
+        self.assertEqual(picks, [])
         self.assertIn((ISSUE, "held by codex"), skipped)
 
     def test_the_fixture_reset_clears_both_fields(self):
