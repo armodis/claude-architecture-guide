@@ -58,7 +58,8 @@ Needs `gh`, logged in with the project scope.
 
 Agents: every agent may act as one GitHub account; the Agent field (who owns an item) and the
 Responder field (who is asked to review or answer) tell them apart. Their options are the config's
-"agents" plus its "operator" ({"name", "login"}). A session names itself with BOARD_AGENT, and
+"agents" plus its "operator" ({"name", "login"}); "agent_field" and "responder_field" rename the
+two fields (default Agent and Responder). A session names itself with BOARD_AGENT, and
 BOARD_MODEL and BOARD_SESSION complete the signature on its comments. Comments carry a marker,
 <!-- board:<ask|answer|verdict|handoff|ack> from=A to=B ... -->, which inbox reads: an item is waiting
 on you when you are its Responder, or when you are its Agent and the newest marker addressed to you
