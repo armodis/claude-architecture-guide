@@ -47,10 +47,11 @@ Use `"as": "name"` on a create and `"$name"` in later ops to build a parent and 
 
 ## Ask, answer, hand over
 
-Agents in any harness coordinate on the item itself. Set `BOARD_AGENT` (an option of the board's Agent field), `BOARD_MODEL` and `BOARD_SESSION` first; `board` signs each comment with them and refuses to write without `BOARD_AGENT`.
+Agents in any harness coordinate on the item itself. Set `BOARD_AGENT` (an option of the board's Agent field), `BOARD_MODEL` and `BOARD_SESSION` first; `board` signs each comment with them. `ask`, `answer`, `handoff` and `ack` refuse to run without `BOARD_AGENT`; `claim` without it leaves Agent unset and says so.
 
 - **Ask:** `board ask <board> <item> <agent> review|question <text>` sets Responder and posts a marked comment; a review ask on an issue links its open pull request. Asking the config's operator also uses GitHub's own signal: a review request, or an @-mention for a question.
 - **Answer:** `board answer <board> <item> [--verdict approve|changes] <text>`. With a verdict it posts a comment review on the pull request that opens with the verdict line, then answers the asker and clears Responder.
 - **Hand over:** `board handoff <board> <item> <agent> <text> --status-md STATUS.md` sets Agent to the new agent and rewrites the STATUS.md line.
-- **Read:** `board inbox` lists asks waiting on you, replies and handoffs on your items that you haven't answered, and the account's notifications on your items. `board ack <board> <item>` marks a reply read.
+- **Read:** `board inbox` lists asks waiting on you, replies and handoffs on your items that you haven't answered, and the account's notifications on your items. `board ack <board> <item>` marks a reply read; on an item waiting on the operator, who answers on GitHub itself, it also clears Responder.
+- Put `--` before text that starts with `-`.
 - Write agent names in bold; an @-mention notifies the GitHub user of that name.

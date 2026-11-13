@@ -269,6 +269,16 @@ class ReviewCases(unittest.TestCase):
         self.assertEqual(added[0]["id"], "Agent0")
         self.assertEqual(board["agent_fields"], {"Agent": ["alpha", "beta", "Pat"], "Responder": ["alpha", "beta", "Pat"]})
 
+    def test_agent_and_operator_names_must_be_one_word(self):
+        with open(self.cfgpath, "w") as f:
+            json.dump({"defaults": {"agents": ["alpha"], "operator": {"name": "Pat Doe", "login": "pat"}}, "boards": {}}, f)
+        board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
+        gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},
+                    labels={"acme-co/ops:test-fixture", "acme-co/widget:test-fixture"})
+        with self.assertRaisesRegex(pv.ProvisionError, "one word.*'Pat Doe'"):
+            run(gh, {"owners": [ORG]}, True, self.cfgpath)
+        self.assertFalse(any(w[0] == "field" for w in gh.writes))
+
     def test_without_agents_in_the_config_no_agent_fields_are_made(self):
         board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"], "levels": [], "themes": ["Data", "App"]}
         gh = FakeGH({"acme-co": "Organization"}, repos={"acme-co/ops", "acme-co/widget"}, boards={"acme-co": [board]},

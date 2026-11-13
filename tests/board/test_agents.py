@@ -108,6 +108,9 @@ class FakeHub:
     def notifications(self, since):
         return self.notes
 
+    def known_refs(self, b):
+        return {e.get("ref") or e.get("pr_ref") for e in self.s["items"]} - {None}
+
     def create_field(self, project_id, name, options):
         self.writes.append(("create_field", name, tuple(options)))
         self.s["fields"][name] = {"id": "new-" + name, "type": "SINGLE_SELECT", "options": OPTS(*options)}
@@ -218,6 +221,29 @@ class Ask(unittest.TestCase):
         run(board.ask, WORK, ISSUE, "Pat", "question", "ok to drop it?", hub=hub)
         self.assertIn("@pat-example", hub.comments()[0])
 
+    def test_a_pull_request_item_without_an_agent_gets_the_asker_so_the_reply_reaches_it(self):
+        hub = FakeHub(agent_snap(pr_item("acme-co/ops#41")))
+        run(board.ask, WORK, "acme-co/ops#41", "codex", "review", "please", hub=hub)
+        self.assertIn(("set", "PVTI_acme-co/ops#41", "Agent", "claude"), hub.writes)
+
+    def test_a_refused_review_request_to_the_operator_falls_back_to_a_mention(self):
+        hub = FakeHub(agent_snap(item(ISSUE, prs=[open_pr("acme-co/ops#40")])),
+                      prs={"acme-co/ops#40": {"id": "PR_40", "url": "u40", "state": "OPEN", "closes": [{"ref": ISSUE}]}})
+
+        def refuse(pr_id, login):
+            raise board.BoardError("Review cannot be requested from pull request author.")
+        hub.request_review = refuse
+        rc, logs = run(board.ask, WORK, ISSUE, "Pat", "review", "please", hub=hub)
+        self.assertEqual(rc, board.APPLIED)
+        self.assertIn("@pat-example", hub.comments()[0])
+        self.assertTrue(any("refused" in l for l in logs))
+
+    def test_names_must_be_one_word(self):
+        s = agent_snap(item(ISSUE))
+        s["fields"]["Responder"]["options"] = OPTS("claude", "Your Name")
+        with self.assertRaisesRegex(board.BoardError, "one word"):
+            run(board.ask, WORK, ISSUE, "your name", "question", "x", hub=FakeHub(s))
+
     def test_a_write_that_does_not_read_back_fails(self):
         rc, _ = run(board.ask, WORK, ISSUE, "codex", "question", "x", hub=FakeHub(agent_snap(item(ISSUE)), readback="claude"))
         self.assertEqual(rc, board.FAILED)
@@ -260,6 +286,10 @@ class Answer(unittest.TestCase):
         self.assertIn("https://example.test/review/", hub.comments()[0])
         self.assertIn("verdict=approve", hub.comments()[0])
 
+    def test_answer_text_may_not_mention_another_owners_issue(self):
+        with self.assertRaisesRegex(board.BoardError, "globex/app#3"):
+            run(board.answer, WORK, ISSUE, "see globex/app#3", hub=FakeHub(self.asked()))
+
     def test_verdict_values(self):
         with self.assertRaisesRegex(board.BoardError, "approve or changes"):
             run(board.answer, WORK, ISSUE, "x", hub=FakeHub(self.asked()), verdict="lgtm")
@@ -280,6 +310,14 @@ class Handoff(unittest.TestCase):
         self.assertIn(("set", "PVTI_" + ISSUE, "Agent", "codex"), hub.writes)
         self.assertIn("<!-- board:handoff from=claude to=codex session=s-1 -->", hub.comments()[0])
 
+    def test_an_item_another_agent_holds_needs_force(self):
+        s = agent_snap(item(ISSUE, status="In Progress", Agent="codex"))
+        with self.assertRaisesRegex(board.BoardError, "held by codex"):
+            run(board.handoff, WORK, ISSUE, "Pat", "x", hub=FakeHub(s))
+        hub = FakeHub(s)
+        run(board.handoff, WORK, ISSUE, "Pat", "x", hub=hub, force=True)
+        self.assertIn(("set", "PVTI_" + ISSUE, "Agent", "Pat"), hub.writes)
+
     def test_rewrites_the_status_md_line_for_the_new_agent(self):
         e = item(ISSUE, title="Build it", status="In Progress", Agent="claude")
         with tempfile.TemporaryDirectory() as d:
@@ -299,6 +337,12 @@ class Ack(unittest.TestCase):
         run(board.ack, WORK, ISSUE, "Read, thanks.", hub=hub)
         self.assertIn("<!-- board:ack from=claude to=claude session=s-1 -->", hub.comments()[0])
         self.assertEqual(hub.kinds(), ["comment"])
+
+    def test_on_an_item_waiting_on_the_operator_ack_clears_responder(self):
+        hub = FakeHub(agent_snap(item(ISSUE, Agent="claude", Responder="Pat")))
+        rc, _ = run(board.ack, WORK, ISSUE, "Pat answered on the pull request.", hub=hub)
+        self.assertEqual(rc, board.APPLIED)
+        self.assertIn(("clear", "PVTI_" + ISSUE, "Responder"), hub.writes)
 
 
 def inbox_item(ref, comments, title="t"):
@@ -379,6 +423,19 @@ class Inbox(unittest.TestCase):
         self.assertIn("loose", text)
         self.assertNotIn("theirs", text)
 
+    def test_notifications_about_no_issue_are_shown(self):
+        s = agent_snap(item(ISSUE), {"item_id": "D1", "kind": "DRAFT_ISSUE", "archived": False, "title": "draft", "fields": {}})
+        notes = [{"id": "n4", "reason": "ci_activity", "title": "a release", "ref": None, "url": "u4", "at": "2026-11-12T01:00:00Z"}]
+        _, logs = run(board.inbox, {"company": WORK}, hub=FakeHub(s, notifications=notes))
+        self.assertIn("a release", "\n".join(logs))
+
+    def test_paginated_output_with_brackets_in_titles_parses(self):
+        text = '[{"id": "1", "subject": {"title": "[Test fixture][wip] x"}}]\n[{"id": "2", "subject": {"title": "y]["}}]'
+        pages = board.json_pages(text, "notifications")
+        self.assertEqual([p[0]["id"] for p in pages], ["1", "2"])
+        with self.assertRaisesRegex(board.BoardError, "unreadable"):
+            board.json_pages('[{"id": ', "notifications")
+
 
 def claim_run(e, env=ME, finish=False, status_md=None, with_fields=True):
     """Run claim or finish with the board stubbed. Returns (plans applied, assignee writes, logs)."""
@@ -449,7 +506,23 @@ class ClaimAndFinish(unittest.TestCase):
         s = agent_snap(item(ISSUE, Priority="P1", Effort=1, Agent="codex"))
         picks, skipped = board.select(WORK, s, count=5, claimed=lambda r: set())
         self.assertEqual(picks, [])
-        self.assertIn((ISSUE, "held by codex"), skipped)
+        self.assertIn((ISSUE, "held by codex (claim --force to take it)"), skipped)
+
+    def test_select_offers_my_own_held_item_back_to_me(self):
+        s = agent_snap(item("acme-co/ops#2", status="Backlog", Category="User Story"),
+                       item(ISSUE, Priority="P1", Effort=1, Agent="claude", parent="acme-co/ops#2"))
+        saved = dict(os.environ)
+        os.environ["BOARD_AGENT"] = "claude"
+        try:
+            picks, _ = board.select(WORK, s, count=5, claimed=lambda r: set())
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertEqual([e["ref"] for e in picks], [ISSUE])
+
+    def test_finish_works_with_an_agent_name_the_field_lacks(self):
+        rc, ops, _ = claim_run(item(ISSUE, status="In Progress", Agent="claude"), env={"BOARD_AGENT": "claude-2"}, finish=True)
+        self.assertEqual(rc, board.APPLIED)
 
     def test_the_fixture_reset_clears_both_fields(self):
         fx = item(ISSUE, title="[Test fixture] t", labels=["test-fixture"], status="Backlog", Agent="claude", Responder="codex")
@@ -472,6 +545,24 @@ class SetupAgents(unittest.TestCase):
         run(board.setup_agents, WORK, hub=hub)
         self.assertIn(("set_options", "FA", ("claude", "old-agent", "codex", "Pat")), hub.writes)
 
+    def test_option_names_match_ignoring_case(self):
+        s = agent_snap()
+        s["fields"]["Agent"]["options"] = OPTS("Claude", "CODEX", "pat")
+        hub = FakeHub(s)
+        run(board.setup_agents, WORK, hub=hub)
+        self.assertEqual(hub.writes, [])
+
+    def test_names_with_spaces_are_refused(self):
+        with self.assertRaisesRegex(board.BoardError, "one word"):
+            run(board.setup_agents, dict(WORK, operator={"name": "Your Name", "login": "x"}), hub=FakeHub(agent_snap(with_fields=False)))
+
+    def test_hygiene_reports_drift_between_the_config_and_the_fields(self):
+        s = agent_snap()
+        s["fields"]["Agent"]["options"] = OPTS("claude", "old-agent")
+        rows = board.hygiene(WORK, s)
+        self.assertIn(("agents", "Agent", "missing options for codex, pat from the config; run board setup-agents"), rows)
+        self.assertIn(("agents", "Agent", "options old-agent are not in the config's agents or operator"), rows)
+
     def test_nothing_to_do_writes_nothing(self):
         hub = FakeHub(agent_snap())
         rc, logs = run(board.setup_agents, WORK, hub=hub)
@@ -489,6 +580,13 @@ class SetupAgents(unittest.TestCase):
         bare = dict(WORK, agents=[])
         with self.assertRaisesRegex(board.BoardError, '"agents"'):
             run(board.setup_agents, bare, hub=FakeHub(agent_snap(with_fields=False)))
+
+
+class Parser(unittest.TestCase):
+    def test_double_dash_ends_options_so_text_may_start_with_a_dash(self):
+        cmd, pos, opts = board.parse(["answer", "company", ISSUE, "--verdict", "approve", "--", "- fixed A", "--force"])
+        self.assertEqual(pos, ["company", ISSUE, "- fixed A", "--force"])
+        self.assertEqual(opts, {"--verdict": "approve"})
 
 
 class Config(unittest.TestCase):

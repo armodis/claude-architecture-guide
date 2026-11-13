@@ -36,7 +36,7 @@ the board whose "repos" list the current directory's repo.
   board answer   <board> <item> <text> [--verdict approve|changes] [--force]
                                                  answer the asker (with a verdict: a comment review on the pull
                                                  request first) and clear Responder
-  board handoff  <board> <item> <agent> <text> [--status-md PATH]
+  board handoff  <board> <item> <agent> <text> [--status-md PATH] [--force]
                                                  make that agent the item's Agent; the STATUS.md line follows
   board ack      <board> <item> [text]           mark a reply or handoff read, so it leaves your inbox
   board inbox    [--agent NAME] [--json] [--since-hours N]
@@ -63,8 +63,10 @@ BOARD_MODEL and BOARD_SESSION complete the signature on its comments. Comments c
 <!-- board:<ask|answer|verdict|handoff|ack> from=A to=B ... -->, which inbox reads: an item is waiting
 on you when you are its Responder, or when you are its Agent and the newest marker addressed to you
 is newer than your own last one. `claim` sets Agent and refuses an item another agent holds;
-`finish` clears Responder; `select` skips items an agent holds. Write agent names in bold: an
-@-mention notifies the GitHub user of that name.
+`finish` clears Responder; `select` skips items another agent holds. The operator answers on GitHub
+itself; `ack` on an item waiting on the operator clears Responder. Names are one word. Put `--`
+before text that starts with "-". Write agent names in bold: an @-mention notifies the GitHub user
+of that name.
 
 A plan is a JSON list of operations; an item is "owner/repo#n", or "$name" for an issue
 created earlier in the same plan with "as": "name".
@@ -529,8 +531,9 @@ def select(b, snap, repo=None, label=None, count=1, claimed=claimed_refs, includ
              and (label is None or label in e["labels"])]
     claims = {}
     for e in cands:
-        if e["fields"].get(b["agent_field"]):
-            skipped.append((e["ref"], f"held by {e['fields'][b['agent_field']]}"))
+        holder = e["fields"].get(b["agent_field"])
+        if holder and holder.lower() != (os.environ.get("BOARD_AGENT") or "").lower():
+            skipped.append((e["ref"], f"held by {holder} (claim --force to take it)"))
             continue
         if e.get("assignees"):
             skipped.append((e["ref"], f"assigned to {', '.join(e['assignees'])}"))
@@ -578,6 +581,16 @@ def hygiene(b, snap, include_fixture=False, today=None, open_prs=None):
 
     def add(kind, ref, msg):
         out.append((kind, ref, msg))
+
+    want = {x.lower() for x in agent_names(b)}
+    for key in ("agent_field", "responder_field"):
+        f = snap.get("fields", {}).get(b[key])
+        if want and f and f.get("options") is not None:
+            have = {o["name"].lower() for o in f["options"]}
+            if want - have:
+                add("agents", b[key], f"missing options for {', '.join(sorted(want - have))} from the config; run board setup-agents")
+            if have - want:
+                add("agents", b[key], f"options {', '.join(sorted(have - want))} are not in the config's agents or operator")
 
     for e in idx.values():
         if not include_fixture and is_fixture(b, e):
@@ -1432,12 +1445,14 @@ def claim(b, boards, ref, status_md=None, finish=False, close=False, force=False
         if others:
             raise BoardError(f"{ref} is assigned to {', '.join(others)} (use --force to claim anyway)")
     agent_f = snap["fields"].get(b["agent_field"])
+    if agent_f and agent_f.get("type") != "SINGLE_SELECT":
+        agent_f = None
     agent, session = os.environ.get("BOARD_AGENT"), os.environ.get("BOARD_SESSION") or None
-    if agent_f and agent:
+    if agent_f and agent and not finish:
         agent = agent_option(agent_f, agent, b["agent_field"])
     if not finish and not force and agent_f:
         holder = e["fields"].get(b["agent_field"])
-        if holder and holder != agent:
+        if holder and holder.lower() != (agent or "").lower():
             raise BoardError(f"{ref} is held by {holder} (use --force to claim anyway)")
     cross = owner_of(ref) != b["owner"]
     plan = []
@@ -1492,6 +1507,21 @@ MARK_RE = re.compile(r"<!-- board:(\w+)((?: [\w-]+=\S+)*) -->")
 
 def thread_of(nodes):
     return [{"id": c["id"], "url": c["url"], "at": c["createdAt"], "body": c["body"] or ""} for c in nodes]
+
+
+def json_pages(text, what):
+    """The JSON values `gh api --paginate` prints back to back, one per page."""
+    pages, i, dec = [], 0, json.JSONDecoder()
+    try:
+        while i < len(text):
+            if text[i].isspace():
+                i += 1
+                continue
+            page, i = dec.raw_decode(text, i)
+            pages.append(page)
+    except ValueError as e:
+        raise BoardError(f"{what}: unreadable output ({e})")
+    return pages
 
 
 class Hub:
@@ -1553,14 +1583,17 @@ class Hub:
         if r.returncode:
             raise BoardError(f"gh api notifications: {r.stderr.strip()}")
         out = []
-        for chunk in re.findall(r"\[.*?\](?=\[|\s*$)", r.stdout.strip(), re.S) or [r.stdout]:
-            for n in json.loads(chunk or "[]"):
+        for page in json_pages(r.stdout, "gh api notifications"):
+            for n in page:
                 m = re.search(r"/repos/([^/]+/[^/]+)/(?:issues|pulls)/(\d+)$", (n["subject"] or {}).get("url") or "")
                 ref = f"{m.group(1)}#{m.group(2)}" if m else None
                 url = ("https://github.com/" + ref.replace("#", "/issues/")) if ref else n["repository"]["html_url"]
                 out.append({"id": n["id"], "reason": n["reason"], "title": n["subject"]["title"], "ref": ref,
                             "url": url, "at": n["updated_at"]})
         return out
+
+    def known_refs(self, b):
+        return {e.get("ref") or e.get("pr_ref") for e in load_snapshot(b)["items"]} - {None}
 
     def create_field(self, project_id, name, options):
         gql(M_FIELD, p=project_id, n=name, o=[{"name": x, "color": "GRAY", "description": ""} for x in options])
@@ -1579,10 +1612,24 @@ def operator_of(b):
     return op.get("name") or op.get("login"), op.get("login")
 
 
+NAME_RE = re.compile(r"^[\w.-]+$")
+
+
+def agent_names(b):
+    """The config's agents plus the operator's option name, each checked to be one word."""
+    names = list(b.get("agents") or []) + ([operator_of(b)[0]] if operator_of(b)[0] else [])
+    bad = [n for n in names if not NAME_RE.match(n or "")]
+    if bad:
+        raise BoardError(f"agent and operator names must be one word (letters, digits, '.', '_', '-'): {', '.join(map(repr, bad))}")
+    return names
+
+
 def agent_option(f, name, what):
     """The option of an agent field that matches name, ignoring case."""
     for o in f.get("options", []):
         if o["name"].lower() == (name or "").strip().lower():
+            if not NAME_RE.match(o["name"]):
+                raise BoardError(f"the {what} option {o['name']!r} must be one word for comment markers; rename it on the board")
             return o["name"]
     raise BoardError(f"{name!r} is not an option of the {what} field; options: {', '.join(o['name'] for o in f.get('options', []))}")
 
@@ -1632,6 +1679,12 @@ def markers(comments):
 def writable(b):
     if b.get("read_only"):
         raise BoardError(f"the {b['name']} board is read-only")
+
+
+def no_foreign_mentions(text, ref):
+    hits = foreign_mentions(text, owner_of(ref))
+    if hits:
+        raise BoardError(f"the text mentions another owner's issue ({', '.join(hits)}); a comment would cross-reference it")
 
 
 def resolve(b, s, ref, hub):
@@ -1688,9 +1741,7 @@ def ask(b, ref, to, kind, text, hub=None, force=False, log=print):
     writable(b)
     if kind not in ASK_KINDS:
         raise BoardError(f"ask takes a kind of {' or '.join(ASK_KINDS)}, not {kind!r}")
-    if foreign_mentions(text, owner_of(ref)):
-        raise BoardError(f"the text mentions another owner's issue ({', '.join(foreign_mentions(text, owner_of(ref)))}); "
-                         "a comment would cross-reference it")
+    no_foreign_mentions(text, ref)
     meta = hub.fields(b)
     f = agent_field(meta, b, "responder_field")
     me, session = whoami()
@@ -1704,13 +1755,20 @@ def ask(b, ref, to, kind, text, hub=None, force=False, log=print):
     lines = [f"**{to}**: {kind} requested. {text}".rstrip()]
     if kind == "review" and e.get("kind") != "PULL_REQUEST" and open_prs_of(e):
         lines.append("Pull request: " + ", ".join(p["url"] for p in e["prs"] if p["state"] == "OPEN"))
-    if to_operator and kind == "question" and op_login:
-        lines.append(f"@{op_login}")
+    mention = to_operator and kind == "question"
     if to_operator and kind == "review":
         pr = one_open_pr(e, hub, "request the review on")
-        hub.request_review(pr["id"], op_login)
-        log(f"{ref}: review requested from {op_login} on {pr['url']}")
+        try:
+            hub.request_review(pr["id"], op_login)
+            log(f"{ref}: review requested from {op_login} on {pr['url']}")
+        except BoardError as ex:  # GitHub refuses a request to the pull request's own author
+            log(f"{ref}: GitHub refused the review request ({ex}); mentioning {op_login} instead")
+            mention = True
+    if mention and op_login:
+        lines.append(f"@{op_login}")
     ok = set_and_check(hub, meta, e, b["responder_field"], to, log)
+    if e.get("kind") == "PULL_REQUEST" and not e["fields"].get(b["agent_field"]) and b["agent_field"] in meta["fields"]:
+        ok = set_and_check(hub, meta, e, b["agent_field"], agent_option(meta["fields"][b["agent_field"]], me, b["agent_field"]), log) and ok
     url = hub.comment(subject_of(e), mark("ask", me, to, kind=kind, session=session) + "\n" + "\n\n".join(lines)
                       + "\n\n" + signature(me))
     log(f"{ref}: {b['responder_field']} {to}, {kind} asked: {url}")
@@ -1724,6 +1782,7 @@ def answer(b, ref, text, hub=None, verdict=None, force=False, log=print):
     writable(b)
     if verdict is not None and verdict not in VERDICTS:
         raise BoardError(f"--verdict takes approve or changes, not {verdict!r}")
+    no_foreign_mentions(text, ref)
     meta = hub.fields(b)
     f = agent_field(meta, b, "responder_field")
     me, session = whoami()
@@ -1749,10 +1808,11 @@ def answer(b, ref, text, hub=None, verdict=None, force=False, log=print):
     return APPLIED if ok else FAILED
 
 
-def handoff(b, ref, to, text, hub=None, status_md=None, log=print):
+def handoff(b, ref, to, text, hub=None, status_md=None, force=False, log=print):
     """Make another agent the item's Agent, with a marked comment and, given one, the STATUS.md line."""
     hub = hub or Hub()
     writable(b)
+    no_foreign_mentions(text, ref)
     if status_md:
         in_progress_span(read_text(status_md).splitlines(keepends=True), status_md)
     meta = hub.fields(b)
@@ -1760,6 +1820,9 @@ def handoff(b, ref, to, text, hub=None, status_md=None, log=print):
     me, session = whoami()
     me, to = agent_option(f, me, b["agent_field"]), agent_option(f, to, b["agent_field"])
     e = resolve(b, hub.snapshot(b), ref, hub)
+    holder = e["fields"].get(b["agent_field"])
+    if holder and holder.lower() != me.lower() and not force:
+        raise BoardError(f"{ref} is held by {holder}, not {me} (use --force to hand it over anyway)")
     ok = set_and_check(hub, meta, e, b["agent_field"], to, log)
     url = hub.comment(subject_of(e), mark("handoff", me, to, session=session) + f"\n**{to}**: handed over. {text}\n\n"
                       + signature(me))
@@ -1772,14 +1835,21 @@ def handoff(b, ref, to, text, hub=None, status_md=None, log=print):
 
 
 def ack(b, ref, text="", hub=None, log=print):
-    """A marked comment saying this agent has read what's on the item, which takes it off its inbox."""
+    """A marked comment saying this agent has read what's on the item, which takes it off its inbox.
+    When the item waits on the operator, who answers on GitHub itself, it also clears Responder."""
     hub = hub or Hub()
     writable(b)
+    no_foreign_mentions(text, ref)
     me, session = whoami()
     e = resolve(b, hub.snapshot(b), ref, hub)
     url = hub.comment(subject_of(e), mark("ack", me, me, session=session) + (f"\n{text}" if text else "")
                       + "\n\n" + signature(me))
     log(f"{ref}: acknowledged: {url}")
+    op_name, _ = operator_of(b)
+    held = e["fields"].get(b["responder_field"])
+    if op_name and held and held.lower() == op_name.lower():
+        meta = hub.fields(b)
+        return APPLIED if set_and_check(hub, meta, e, b["responder_field"], None, log) else FAILED
     return APPLIED
 
 
@@ -1820,8 +1890,7 @@ def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print
                 continue
             asked = hub.items(b, f'{b["responder_field"]}:"{me}" is:open')
             owned = hub.items(b, f'{b["agent_field"]}:"{me}" is:open') if b["agent_field"] in meta["fields"] else []
-            s = hub.snapshot(b)
-            on_boards |= {e.get("ref") or e.get("pr_ref") for e in s["items"]}
+            on_boards |= hub.known_refs(b)
         except BoardError as ex:
             log(f"{b['name']}: {ex}")
             failed += 1
@@ -1844,7 +1913,7 @@ def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print
     notes = []
     try:
         for n in hub.notifications(since):
-            if n["ref"] in mine or n["ref"] not in on_boards:
+            if n["ref"] is None or n["ref"] in mine or n["ref"] not in on_boards:
                 notes.append(n)
     except BoardError as ex:
         log(f"notifications: {ex}")
@@ -1869,8 +1938,7 @@ def setup_agents(b, hub=None, dry_run=False, log=print):
     options, or add the options a field is missing, keeping the rest and their ids."""
     hub = hub or Hub()
     writable(b)
-    op_name, _ = operator_of(b)
-    want = list(b.get("agents") or []) + ([op_name] if op_name else [])
+    want = agent_names(b)
     if not b.get("agents"):
         raise BoardError(f'the config lists no "agents" for the {b["name"]} board; add them (and an "operator") first')
     meta, did = hub.fields(b), 0
@@ -1884,8 +1952,8 @@ def setup_agents(b, hub=None, dry_run=False, log=print):
             continue
         if f["type"] != "SINGLE_SELECT":
             raise BoardError(f"{b['name']}: {name} exists but is not a single-select field")
-        have = {o["name"] for o in f["options"]}
-        add = [x for x in want if x not in have]
+        have = {o["name"].lower() for o in f["options"]}
+        add = [x for x in want if x.lower() not in have]
         if add:
             log(f"{b['name']}: add {', '.join(add)} to {name}")
             if not dry_run:
@@ -1897,7 +1965,8 @@ def setup_agents(b, hub=None, dry_run=False, log=print):
     if dry_run:
         return APPLIED
     after = hub.fields(b)["fields"]
-    ok = all(set(want) <= {o["name"] for o in (after.get(b[k]) or {}).get("options", [])} for k in ("agent_field", "responder_field"))
+    ok = all({x.lower() for x in want} <= {o["name"].lower() for o in (after.get(b[k]) or {}).get("options", [])}
+             for k in ("agent_field", "responder_field"))
     log(f"     read back: {b['agent_field']} and {b['responder_field']} {'ok' if ok else 'MISMATCH'}")
     return APPLIED if ok else FAILED
 
@@ -2063,7 +2132,7 @@ COMMANDS = {
     "release": ((3, 3), (), ("--dry-run",)),
     "ask": ((4, 99), (), ("--force",)),
     "answer": ((3, 99), ("--verdict",), ("--force",)),
-    "handoff": ((4, 99), ("--status-md",), ()),
+    "handoff": ((4, 99), ("--status-md",), ("--force",)),
     "ack": ((2, 99), (), ()),
     "inbox": ((0, 0), ("--agent", "--since-hours"), ("--json",)),
     "setup-agents": ((1, 1), (), ("--dry-run",)),
@@ -2080,6 +2149,9 @@ def parse(argv):
     pos, opts, i = [], {}, 0
     while i < len(rest_):
         x = rest_[i]
+        if x == "--":  # everything after is text, even when it starts with "-"
+            pos += rest_[i + 1:]
+            break
         if x in with_value:
             if i + 1 >= len(rest_):
                 raise BoardError(f"{x} needs a value")
@@ -2182,12 +2254,15 @@ def main(argv):
     elif cmd == "answer":
         return answer(board_cfg(boards, a[0]), a[1], " ".join(a[2:]), verdict=o.get("--verdict"), force=o.get("--force", False))
     elif cmd == "handoff":
-        return handoff(board_cfg(boards, a[0]), a[1], a[2], " ".join(a[3:]), status_md=o.get("--status-md"))
+        return handoff(board_cfg(boards, a[0]), a[1], a[2], " ".join(a[3:]), status_md=o.get("--status-md"),
+                       force=o.get("--force", False))
     elif cmd == "ack":
         return ack(board_cfg(boards, a[0]), a[1], " ".join(a[2:]))
     elif cmd == "inbox":
-        return inbox({n: b for n, b in boards.items()}, agent=o.get("--agent"), as_json=o.get("--json", False),
-                     since_hours=int(o.get("--since-hours", "72")))
+        hours = o.get("--since-hours", "72")
+        if not hours.isdigit():
+            raise BoardError(f"--since-hours takes a whole number of hours, not {hours!r}")
+        return inbox(boards, agent=o.get("--agent"), as_json=o.get("--json", False), since_hours=int(hours))
     elif cmd == "setup-agents":
         return setup_agents(board_cfg(boards, a[0]), dry_run=o.get("--dry-run", False))
     elif cmd == "release":

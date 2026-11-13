@@ -683,8 +683,10 @@ The operator's own terminal sets none of these, so it stays the operator.
 
 ```json
 "agents": ["claude", "codex"],
-"operator": {"name": "Your Name", "login": "your-github-login"}
+"operator": {"name": "Pat", "login": "your-github-login"}
 ```
+
+Names are one word (letters, digits, `.`, `_`, `-`), because comment markers carry them.
 
 | Field | Means | Set by | Cleared by |
 |---|---|---|---|
@@ -706,6 +708,8 @@ claude:  (merges) board finish . acme/app#12 --status-md STATUS.md
 **Reviews between agents.** One account can't approve its own pull requests, so an agent's review is a comment review that opens with a verdict line (`**Verdict: approve**` or `**Verdict: changes requested**`). A pull request merges after another agent's approve verdict or the operator's approval. GitHub can't enforce that rule on a Free plan's private repos, so agents follow it by instruction. Agents ask the operator through GitHub's own review request, and the operator's comments reach the machine account's notifications, which the inbox shows.
 
 **Waking an agent.** Agents run `board inbox` at session start and between tasks. `board inbox --agent <name> --json` gives a poller one entry per waiting marker, keyed by its comment, so a local dispatcher can start or nudge the agent named.
+
+**The operator answers on GitHub itself**, in a review or a comment. The agent that asked runs `board ack`, which also clears Responder when it names the operator.
 
 **Agent names** like `claude` or `codex` are often real GitHub users, so they are written in bold, not as @-mentions.
 

@@ -26,7 +26,7 @@ with a fresh rehearsal, so the report reads back what landed. Needs `gh`, logged
 Exit codes: 0 everything in place; 1 an error; 2 steps remain (rehearsal, or something only the
 web UI can do).
 """
-import json, os, subprocess, sys, urllib.parse
+import json, os, re, subprocess, sys, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOWS = ["Item closed", "Item reopened", "Pull request linked to issue", "Pull request merged",
@@ -379,7 +379,8 @@ class Run:
         fields = {f["name"]: f for f in d["fields"]["nodes"] if f}
         if b.get("themes"):
             self.themes(d, fields.get("Theme"), b["themes"])
-        self.agent_fields(d, p["id"], fields)
+        if not b.get("read_only"):
+            self.agent_fields(d, p["id"], fields)
         off = [w["name"] for w in d["workflows"]["nodes"] if w["name"] in WORKFLOWS and not w["enabled"]]
         have = {w["name"] for w in d["workflows"]["nodes"]}
         off += [w for w in WORKFLOWS if w not in have]
@@ -401,6 +402,9 @@ class Run:
             self.say("·", f"board #{d['number']}: no \"agents\" in the board config's defaults, so no Agent and Responder fields")
             return
         want = agents + ([op_name] if op_name else [])
+        bad = [n for n in want if not re.match(r"^[\w.-]+$", n or "")]
+        if bad:
+            raise ProvisionError(f"agent and operator names must be one word: {', '.join(map(repr, bad))}")
         for key, default in (("agent_field", "Agent"), ("responder_field", "Responder")):
             name = self.defaults.get(key) or default
             f = fields.get(name)
@@ -410,8 +414,8 @@ class Run:
                     self.gh.graphql(FIELD_M, p=project_id, n=name,
                                     o=[{"name": x, "color": "GRAY", "description": ""} for x in want])
                 continue
-            have = [o["name"] for o in f.get("options", [])]
-            add = [x for x in want if x not in have]
+            have = {o["name"].lower() for o in f.get("options", [])}
+            add = [x for x in want if x.lower() not in have]
             if add:
                 self.pending(f"{', '.join(add)} in {name} on board #{d['number']}")
                 if self.live:
