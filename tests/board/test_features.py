@@ -82,7 +82,7 @@ class RequiredFields(unittest.TestCase):
     def test_parent_optional_levels_need_no_parent(self):
         standalone = dict(WORK, parent_optional=["Task"])
         task = dict(FULL, op="create", repo="acme-co/ops", title="t", parent=None)
-        with self.assertRaisesRegex(board.BoardError, "parent link"):
+        with self.assertRaisesRegex(board.BoardError, "parent link .*parent_optional"):
             check([task])
         board.check_plan(standalone, tree_snap(), [task], no_lookup)
         s = tree_snap(item("acme-co/ops#4", Priority="P1", Effort=1, assignees=()))
