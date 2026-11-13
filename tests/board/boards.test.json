@@ -18,7 +18,15 @@
     },
     "stale_days": 7,
     "review_over_items": 10,
-    "settle_seconds": 0
+    "settle_seconds": 0,
+    "agents": [
+      "claude",
+      "codex"
+    ],
+    "operator": {
+      "name": "Pat",
+      "login": "pat-example"
+    }
   },
   "boards": {
     "company": {

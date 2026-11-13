@@ -26,7 +26,7 @@ with a fresh rehearsal, so the report reads back what landed. Needs `gh`, logged
 Exit codes: 0 everything in place; 1 an error; 2 steps remain (rehearsal, or something only the
 web UI can do).
 """
-import json, os, subprocess, sys, urllib.parse
+import json, os, re, subprocess, sys, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOWS = ["Item closed", "Item reopened", "Pull request linked to issue", "Pull request merged",
@@ -107,6 +107,8 @@ BOARD_Q = """query($p:ID!){node(id:$p){... on ProjectV2{number url
   fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}"""
 COPY_M = """mutation($p:ID!,$o:ID!,$t:String!){copyProjectV2(input:{projectId:$p,ownerId:$o,title:$t,includeDraftIssues:false}){projectV2{id number url}}}"""
 LINK_M = """mutation($p:ID!,$r:ID!){linkProjectV2ToRepository(input:{projectId:$p,repositoryId:$r}){repository{id}}}"""
+FIELD_M = """mutation($p:ID!,$n:String!,$o:[ProjectV2SingleSelectFieldOptionInput!]){createProjectV2Field(input:{projectId:$p,
+  dataType:SINGLE_SELECT,name:$n,singleSelectOptions:$o}){projectV2Field{... on ProjectV2FieldCommon{id}}}}"""
 OPTIONS_M = """mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}"""
 
 
@@ -180,7 +182,18 @@ def scaffold(owner, repo):
                           "- Design complex work with `/design-loop`: one folder per run under `design/<YYYY-MM-DD-slug>/`.\n"
                           "- Read and change the project board with `board` and the `item` and `pickup` skills.\n"
                           "- Implementation goes on a feature branch and lands by pull request with `closes #N`.\n"
-                          "- Commit prefixes: `analysis:`, `plan:`, `impl:`, `status:`, plus `feat:` / `fix:` / `docs:` / `chore:`.\n")
+                          "- Commit prefixes: `analysis:`, `plan:`, `impl:`, `status:`, plus `feat:` / `fix:` / `docs:` / `chore:`.\n\n"
+                          "## Working with other agents\n\n"
+                          "Agents from any harness share this repo's work through the board, issues, pull requests and STATUS.md.\n\n"
+                          "- Set `BOARD_AGENT` to your agent name (an option of the board's Agent field), with `BOARD_MODEL` and "
+                          "`BOARD_SESSION`; `board` signs your comments with them.\n"
+                          "- Run `board inbox` at the start of each session and between tasks, and deal with what's waiting first.\n"
+                          "- Claim with `board claim . <owner/repo#n> --status-md STATUS.md`; it sets Agent to you.\n"
+                          "- Ask with `board ask . <item> <agent> review|question <text>`; answer with "
+                          "`board answer . <item> [--verdict approve|changes] <text>`; hand over with "
+                          "`board handoff . <item> <agent> <text> --status-md STATUS.md`; mark a reply read with `board ack . <item>`.\n"
+                          "- A pull request merges after another agent's approve verdict or the operator's approval.\n"
+                          "- Write agent names in bold; an @-mention notifies the GitHub user of that name.\n")
     files["STATUS.md"] = (f"# STATUS — {name}\n\n## What just happened\n\n- Repo created with the guide's layout.\n\n"
                           "## What's in progress\n\n(none)\n\n## What's next\n\n- File the first issues on the board.\n\n"
                           "## Where to find things\n\n- Layout → [README.md](README.md)\n- Conventions → [AGENTS.md](AGENTS.md)\n")
@@ -366,6 +379,8 @@ class Run:
         fields = {f["name"]: f for f in d["fields"]["nodes"] if f}
         if b.get("themes"):
             self.themes(d, fields.get("Theme"), b["themes"])
+        if not b.get("read_only"):
+            self.agent_fields(d, p["id"], fields)
         off = [w["name"] for w in d["workflows"]["nodes"] if w["name"] in WORKFLOWS and not w["enabled"]]
         have = {w["name"] for w in d["workflows"]["nodes"]}
         off += [w for w in WORKFLOWS if w not in have]
@@ -377,6 +392,35 @@ class Run:
         self.entries[b["name"]] = {"owner": owner, "owner_type": typ, "number": d["number"], "repos": repos,
                                    "release": "tags" if tags else "none", "hierarchy": levels, "outside_hierarchy": [],
                                    **({"read_only": True} if b.get("read_only") else {})}
+
+    def agent_fields(self, d, project_id, fields):
+        """The Agent and Responder fields, with the board config's agents and operator as options."""
+        agents = list(self.defaults.get("agents") or [])
+        op = self.defaults.get("operator")
+        op_name = (op if isinstance(op, str) else (op or {}).get("name") or (op or {}).get("login")) if op else None
+        if not agents:
+            self.say("·", f"board #{d['number']}: no \"agents\" in the board config's defaults, so no Agent and Responder fields")
+            return
+        want = agents + ([op_name] if op_name else [])
+        bad = [n for n in want if not re.match(r"^[\w.-]+$", n or "")]
+        if bad:
+            raise ProvisionError(f"agent and operator names must be one word: {', '.join(map(repr, bad))}")
+        for key, default in (("agent_field", "Agent"), ("responder_field", "Responder")):
+            name = self.defaults.get(key) or default
+            f = fields.get(name)
+            if f is None:
+                self.pending(f"field {name} on board #{d['number']} with {', '.join(want)}")
+                if self.live:
+                    self.gh.graphql(FIELD_M, p=project_id, n=name,
+                                    o=[{"name": x, "color": "GRAY", "description": ""} for x in want])
+                continue
+            have = {o["name"].lower() for o in f.get("options", [])}
+            add = [x for x in want if x.lower() not in have]
+            if add:
+                self.pending(f"{', '.join(add)} in {name} on board #{d['number']}")
+                if self.live:
+                    keep = [{k: o[k] for k in ("id", "name", "color", "description")} for o in f["options"]]
+                    self.gh.graphql(OPTIONS_M, f=f["id"], o=keep + [{"name": x, "color": "GRAY", "description": ""} for x in add])
 
     def themes(self, d, field, themes):
         if not field:
