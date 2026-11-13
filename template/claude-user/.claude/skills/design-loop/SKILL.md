@@ -59,7 +59,7 @@ Write `contract.md`: goal, scope, the decisions (linked to the ledger), and the 
 
 ### 5. Build to contract (agents)
 
-Build against the tests. A mid-flight decision that is **reversible** goes in `decisions.md`, marked "decided during build, reversible", and the build continues. One that is **irreversible or outward-facing** (deletion, force-push, external messages, other people's work, shared settings) comes to the operator before acting.
+Run the [`preflight`](../preflight/SKILL.md) skill first, with `--pull` and the paths of every repo the build works in, and stop on a non-zero exit: report what blocks and its fix. Then build against the tests. A mid-flight decision that is **reversible** goes in `decisions.md`, marked "decided during build, reversible", and the build continues. One that is **irreversible or outward-facing** (deletion, force-push, external messages, other people's work, shared settings) comes to the operator before acting.
 
 ### 6. Verify (verifier)
 

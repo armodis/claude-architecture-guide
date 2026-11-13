@@ -44,7 +44,7 @@ $EDITOR github.json             # your organizations, repos and boards
 ./verify.sh                     # confirm the wiring, and that GitHub matches github.json
 ```
 
-At the end, every organization in `github.json` has its repos (with this guide's layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup` and `board-setup` skills work in every repo.
+At the end, every organization in `github.json` has its repos (with this guide's layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup`, `board-setup` and `preflight` skills work in every repo.
 
 What ships alongside this guide:
 
@@ -556,7 +556,7 @@ Agents read and change boards through one command, [`board`](template/board/.loc
   - On a tag-release repo, the same workflow runs `board release` when a release is published, which moves released items from Pending Release to Done.
 - **Tests:** `python3 -m unittest discover -s tests/board` runs the offline suite against a made-up config; [`tests/board/live_fixture.py`](tests/board/live_fixture.py) runs the commands against a real board's labelled test fixture.
 
-Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, links, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema.
+Three skills run the common tasks on top of it: [`item`](template/claude-user/.claude/skills/item/SKILL.md) files, grooms, links, claims and closes issues with the required fields; [`pickup`](template/claude-user/.claude/skills/pickup/SKILL.md) selects the next ready item and claims it; [`board-setup`](template/claude-user/.claude/skills/board-setup/SKILL.md) sets a board up to this schema. Before a build or a scheduled run, [`preflight`](template/claude-user/.claude/skills/preflight/SKILL.md) checks that every checkout the run touches is clean and current and that the tools it needs are signed in, so the run fails at the start rather than halfway.
 
 ### Hierarchy via Category + sub-issues
 
