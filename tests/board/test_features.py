@@ -82,8 +82,11 @@ class RequiredFields(unittest.TestCase):
     def test_parent_optional_levels_need_no_parent(self):
         standalone = dict(WORK, parent_optional=["Task"])
         task = dict(FULL, op="create", repo="acme-co/ops", title="t", parent=None)
-        with self.assertRaisesRegex(board.BoardError, "parent link .*parent_optional"):
+        with self.assertRaisesRegex(board.BoardError, r"parent link \(or, with the owner's agreement, add Task to .*parent_optional.*\)$"):
             check([task])
+        todo = dict(task, fields=dict(task["fields"], Status="Todo"), body="no marker")
+        with self.assertRaisesRegex(board.BoardError, r"parent link \(or.*stand alone\), a done-when line"):
+            check([todo])
         board.check_plan(standalone, tree_snap(), [task], no_lookup)
         s = tree_snap(item("acme-co/ops#4", Priority="P1", Effort=1, assignees=()))
         self.assertIn(("orphan", "acme-co/ops#4", "Task with no parent"), set(board.hygiene(WORK, s)))

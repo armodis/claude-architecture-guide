@@ -876,9 +876,10 @@ def check_plan(b, snap, plan, issue_info, repo_info=None, body_of=None, pr_info=
                 if fv.get("Status") == b["statuses"]["select"] and not has_done_marker(b, op.get("body")):
                     gaps.append("a done-when line in the body (needed at " + b["statuses"]["select"] + ")")
                 if gaps:
-                    hint = (f" (or add {new_level or 'its level'} to the board's parent_optional in the config"
-                            " to let it stand alone)") if "parent link" in gaps else ""
-                    raise BoardError(f"op {n}: create \"{op['title']}\" needs {', '.join(gaps)}{hint}")
+                    gaps = [f"parent link (or, with the owner's agreement, add {new_level} to the board's"
+                            " parent_optional in boards.json to let it stand alone)" if g == "parent link" else g
+                            for g in gaps]
+                    raise BoardError(f"op {n}: create \"{op['title']}\" needs {', '.join(gaps)}")
             for fname, v in (op.get("fields") or {}).items():
                 f = working.get(fname)
                 if f is None:
