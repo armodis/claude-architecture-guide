@@ -21,7 +21,7 @@ One `create` op per issue, with every field you can fill. `board check` refuses 
 
 - **Every issue:** Status, Priority, Theme, Complexity, and `type` (Task, Bug or Feature; a parent is Feature).
 - **Effort** on Tasks and Stories. **Category** on parents, from the board's hierarchy (`board boards`, then the config).
-- **parent** for everything below the board's top level, at a higher level than the new issue. Skipped levels are allowed; an upside-down link is refused.
+- **parent** for everything below the board's top level, at a higher level than the new issue. Skipped levels are allowed; an upside-down link is refused. A level listed in the board's `parent_optional` (in the board config) may stand alone. When the owner wants standalone issues at a level that is not listed, add the level to `parent_optional` with their agreement, and file the issues without a parent.
 - **Status:** Todo when it's ready: required fields set, a "Done when:" line in the body, and no open decision. Backlog otherwise, with what keeps it there said in the body.
 - **Body:** what done looks like, and links to the evidence or discussion it came from. Mention issues of the same owner as `owner/repo#n`; an issue of another owner goes in a `relate` or `block` op, not in the text (the check refuses it).
 - **Work only a person can do:** assign that person with `gh issue edit <n> --repo <owner/repo> --add-assignee <login>`, so agents skip it.
