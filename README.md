@@ -442,7 +442,7 @@ Three sections, all forward-pointing — no rolling history (git is the history)
 
 ## What's in progress
 (Issues currently claimed by an active session — see Concurrency & Claiming.
- Format, as `board claim` writes it: `- [owner/repo#N](issue URL) <title> — claimed YYYY-MM-DD`)
+ Format, as `board claim` writes it: `- [owner/repo#N](issue URL) <title> — claimed YYYY-MM-DD by <agent> (session <id>)`)
 
 ## What's next
 (1–3 concrete next actions. Annotate each issue with `(P_, E_)` from the

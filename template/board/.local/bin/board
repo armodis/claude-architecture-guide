@@ -1592,8 +1592,12 @@ class Hub:
                             "url": url, "at": n["updated_at"]})
         return out
 
-    def known_refs(self, b):
-        return {e.get("ref") or e.get("pr_ref") for e in load_snapshot(b)["items"]} - {None}
+    def membership(self, b):
+        """From the cached snapshot: every issue and pull request on the board, and each issue's pull requests."""
+        items = load_snapshot(b)["items"]
+        prs = {e["ref"]: [p["ref"] for p in e.get("prs", [])] for e in items if e.get("ref")}
+        refs = {e.get("ref") or e.get("pr_ref") for e in items} | {r for v in prs.values() for r in v}
+        return refs - {None}, prs
 
     def create_field(self, project_id, name, options):
         gql(M_FIELD, p=project_id, n=name, o=[{"name": x, "color": "GRAY", "description": ""} for x in options])
@@ -1657,7 +1661,8 @@ def signature(agent):
 
 
 def mark(what, frm, to, **kv):
-    extra = "".join(f" {k}={v}" for k, v in kv.items() if v)
+    kv = {k: re.sub(r"\s+", "-", str(v)) for k, v in kv.items() if v}  # each value stays one token
+    extra = "".join(f" {k}={v}" for k, v in kv.items())
     return f"<!-- board:{what} from={frm} to={to}{extra} -->"
 
 
@@ -1700,7 +1705,7 @@ def resolve(b, s, ref, hub):
             pr = None
         hits = [idx[x["ref"]] for x in (pr or {}).get("closes", []) if x["ref"] in idx]
         if len(hits) == 1:
-            return hits[0]
+            return dict(hits[0], named_pr=dict(pr, ref=ref))
     raise BoardError(f"{ref} is not on the {b['name']} board")
 
 
@@ -1715,6 +1720,8 @@ def open_prs_of(e):
 
 
 def one_open_pr(e, hub, why):
+    if e.get("named_pr"):  # the caller named this pull request
+        return e["named_pr"]
     prs = open_prs_of(e)
     if not prs:
         raise BoardError(f"{e.get('ref') or e.get('pr_ref')} has no open pull request to {why}")
@@ -1748,8 +1755,9 @@ def ask(b, ref, to, kind, text, hub=None, force=False, log=print):
     me, to = agent_option(f, me, b["responder_field"]), agent_option(f, to, b["responder_field"])
     e = resolve(b, hub.snapshot(b), ref, hub)
     held = e["fields"].get(b["responder_field"])
-    if held and held != to and not force:
+    if held and held != to and held.lower() != me.lower() and not force:
         raise BoardError(f"{ref} is already waiting on {held} (use --force to ask {to} instead)")
+    prev = held if held and held != to else None  # answer puts it back, so that ask isn't lost
     op_name, op_login = operator_of(b)
     to_operator = op_name is not None and to.lower() == op_name.lower()
     lines = [f"**{to}**: {kind} requested. {text}".rstrip()]
@@ -1769,7 +1777,7 @@ def ask(b, ref, to, kind, text, hub=None, force=False, log=print):
     ok = set_and_check(hub, meta, e, b["responder_field"], to, log)
     if e.get("kind") == "PULL_REQUEST" and not e["fields"].get(b["agent_field"]) and b["agent_field"] in meta["fields"]:
         ok = set_and_check(hub, meta, e, b["agent_field"], agent_option(meta["fields"][b["agent_field"]], me, b["agent_field"]), log) and ok
-    url = hub.comment(subject_of(e), mark("ask", me, to, kind=kind, session=session) + "\n" + "\n\n".join(lines)
+    url = hub.comment(subject_of(e), mark("ask", me, to, kind=kind, prev=prev, session=session) + "\n" + "\n\n".join(lines)
                       + "\n\n" + signature(me))
     log(f"{ref}: {b['responder_field']} {to}, {kind} asked: {url}")
     return APPLIED if ok else FAILED
@@ -1792,7 +1800,7 @@ def answer(b, ref, text, hub=None, verdict=None, force=False, log=print):
     if held != me and not force:
         raise BoardError(f"{ref} is waiting on {held or 'no one'}, not {me} (use --force to answer anyway)")
     asks = [m for m in markers(hub.thread(subject_of(e))) if m["kind"] == "ask" and m.get("to", "").lower() == me.lower()]
-    asker = asks[-1]["from"] if asks else (e["fields"].get(b["agent_field"]) or "the owner")
+    asker = asks[-1]["from"] if asks else (e["fields"].get(b["agent_field"]) or "owner")
     lines = [f"**{asker}**: " + (f"verdict {verdict}. " if verdict else "answered. ") + text]
     if verdict:
         pr = one_open_pr(e, hub, "review")
@@ -1803,7 +1811,11 @@ def answer(b, ref, text, hub=None, verdict=None, force=False, log=print):
         log(f"{ref}: verdict {verdict} posted: {rurl}")
     url = hub.comment(subject_of(e), mark("answer", me, asker, verdict=verdict, session=session) + "\n"
                       + "\n\n".join(lines) + "\n\n" + signature(me))
-    ok = set_and_check(hub, meta, e, b["responder_field"], None, log)
+    prev = asks[-1].get("prev") if asks else None
+    back = agent_option(f, prev, b["responder_field"]) if prev and prev.lower() != me.lower() else None
+    ok = set_and_check(hub, meta, e, b["responder_field"], back, log)
+    if back:
+        log(f"{ref}: {b['responder_field']} back to {back}, whose ask this one displaced")
     log(f"{ref}: answered {asker}: {url}")
     return APPLIED if ok else FAILED
 
@@ -1875,33 +1887,39 @@ def pending_for(me, comments):
     return None
 
 
-def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print, now_=None):
+def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print, now_=None, warn=None):
     """What is waiting on this agent, read live from every board: asks where it is Responder,
     replies and handoffs on items where it is Agent that it hasn't answered, and the account's
     notifications on its items or on no board. Exit 1 when a board couldn't be read."""
     hub = hub or Hub()
     me, _ = whoami(agent)
-    entries, seen, failed, mine, on_boards = [], set(), 0, set(), set()
+    if warn is None:  # with --json, stdout carries only the JSON document
+        warn = (lambda m: print(m, file=sys.stderr)) if as_json else log
+    entries, seen, failed, mine, on_boards, prs_of = [], set(), 0, set(), set(), {}
     for b in boards.values():
         try:
             meta = hub.fields(b)
             if b["responder_field"] not in meta["fields"]:
-                log(f"{b['name']}: no {b['responder_field']} field, skipped")
+                warn(f"{b['name']}: no {b['responder_field']} field, skipped")
                 continue
             asked = hub.items(b, f'{b["responder_field"]}:"{me}" is:open')
             owned = hub.items(b, f'{b["agent_field"]}:"{me}" is:open') if b["agent_field"] in meta["fields"] else []
-            on_boards |= hub.known_refs(b)
+            refs, prs = hub.membership(b)
+            on_boards |= refs
+            prs_of.update(prs)
         except BoardError as ex:
-            log(f"{b['name']}: {ex}")
+            warn(f"{b['name']}: {ex}")
             failed += 1
             continue
         for it, is_ask in [(x, True) for x in asked] + [(x, False) for x in owned]:
             mine.add(it["ref"])
+            mine.update(prs_of.get(it["ref"], []))  # notifications on its pull requests are its too
             if it["ref"] in seen:
                 continue
             ms = markers(it["comments"])
-            if is_ask:
-                m = next((x for x in reversed(ms) if x["kind"] == "ask" and x.get("to", "").lower() == me.lower()), None)
+            if is_ask:  # the newest word to me: an answer to my own question, or the ask itself
+                m = pending_for(me, it["comments"]) or next(
+                    (x for x in reversed(ms) if x["kind"] == "ask" and x.get("to", "").lower() == me.lower()), None)
             else:
                 m = pending_for(me, it["comments"])
                 if m is None:
@@ -1916,7 +1934,7 @@ def inbox(boards, hub=None, agent=None, as_json=False, since_hours=72, log=print
             if n["ref"] is None or n["ref"] in mine or n["ref"] not in on_boards:
                 notes.append(n)
     except BoardError as ex:
-        log(f"notifications: {ex}")
+        warn(f"notifications: {ex}")
         failed += 1
     if as_json:
         log(json.dumps({"agent": me, "items": entries, "notifications": notes}, indent=1))
@@ -1965,7 +1983,11 @@ def setup_agents(b, hub=None, dry_run=False, log=print):
     if dry_run:
         return APPLIED
     after = hub.fields(b)["fields"]
-    ok = all({x.lower() for x in want} <= {o["name"].lower() for o in (after.get(b[k]) or {}).get("options", [])}
+    kept = all(o.get("id") in {x.get("id") for x in (after.get(b[k]) or {}).get("options", [])}
+               for k in ("agent_field", "responder_field") for o in (meta["fields"].get(b[k]) or {}).get("options", []))
+    if not kept:
+        log("     read back: an existing option lost its id, so items set to it were cleared")
+    ok = kept and all({x.lower() for x in want} <= {o["name"].lower() for o in (after.get(b[k]) or {}).get("options", [])}
              for k in ("agent_field", "responder_field"))
     log(f"     read back: {b['agent_field']} and {b['responder_field']} {'ok' if ok else 'MISMATCH'}")
     return APPLIED if ok else FAILED

@@ -108,8 +108,10 @@ class FakeHub:
     def notifications(self, since):
         return self.notes
 
-    def known_refs(self, b):
-        return {e.get("ref") or e.get("pr_ref") for e in self.s["items"]} - {None}
+    def membership(self, b):
+        prs = {e["ref"]: [p["ref"] for p in e.get("prs", [])] for e in self.s["items"] if e.get("ref")}
+        refs = {e.get("ref") or e.get("pr_ref") for e in self.s["items"]} | {r for v in prs.values() for r in v}
+        return refs - {None}, prs
 
     def create_field(self, project_id, name, options):
         self.writes.append(("create_field", name, tuple(options)))
@@ -244,6 +246,16 @@ class Ask(unittest.TestCase):
         with self.assertRaisesRegex(board.BoardError, "one word"):
             run(board.ask, WORK, ISSUE, "your name", "question", "x", hub=FakeHub(s))
 
+    def test_the_current_responder_may_ask_and_the_marker_records_it(self):
+        hub = FakeHub(agent_snap(item(ISSUE, Agent="claude", Responder="codex")))
+        run(board.ask, WORK, ISSUE, "claude", "question", "Which branch?", hub=hub, env=dict(ME, BOARD_AGENT="codex"))
+        self.assertIn("<!-- board:ask from=codex to=claude kind=question prev=codex", hub.comments()[0])
+
+    def test_a_session_id_with_spaces_stays_one_token(self):
+        hub = FakeHub(agent_snap(item(ISSUE)))
+        run(board.ask, WORK, ISSUE, "codex", "question", "x", hub=hub, env=dict(ME, BOARD_SESSION="tmux 3 left"))
+        self.assertIn("session=tmux-3-left -->", hub.comments()[0])
+
     def test_a_write_that_does_not_read_back_fails(self):
         rc, _ = run(board.ask, WORK, ISSUE, "codex", "question", "x", hub=FakeHub(agent_snap(item(ISSUE)), readback="claude"))
         self.assertEqual(rc, board.FAILED)
@@ -289,6 +301,20 @@ class Answer(unittest.TestCase):
     def test_answer_text_may_not_mention_another_owners_issue(self):
         with self.assertRaisesRegex(board.BoardError, "globex/app#3"):
             run(board.answer, WORK, ISSUE, "see globex/app#3", hub=FakeHub(self.asked()))
+
+    def test_answering_puts_back_the_responder_the_ask_displaced(self):
+        hub = FakeHub(agent_snap(item(ISSUE, Agent="claude", Responder="claude")),
+                      thread=[marker("ask", "claude", "codex", "2026-11-12T01:00:00Z", kind="review"),
+                              marker("ask", "codex", "claude", "2026-11-12T02:00:00Z", kind="question", prev="codex")])
+        run(board.answer, WORK, ISSUE, "Use main.", hub=hub)
+        self.assertIn(("set", "PVTI_" + ISSUE, "Responder", "codex"), hub.writes)
+        self.assertIn("to=codex", hub.comments()[0])
+
+    def test_a_named_pull_request_is_the_one_reviewed_among_several(self):
+        two = self.asked(prs=[open_pr("acme-co/ops#40"), open_pr("acme-co/ops#41")])
+        hub = FakeHub(two, prs={"acme-co/ops#41": {"id": "PR_41", "url": "u41", "state": "OPEN", "closes": [{"ref": ISSUE}]}})
+        run(board.answer, WORK, "acme-co/ops#41", "ok", hub=hub, verdict="approve")
+        self.assertEqual([w[1] for w in hub.writes if w[0] == "review"], ["PR_41"])
 
     def test_verdict_values(self):
         with self.assertRaisesRegex(board.BoardError, "approve or changes"):
@@ -422,6 +448,31 @@ class Inbox(unittest.TestCase):
         self.assertIn("mine", text)
         self.assertIn("loose", text)
         self.assertNotIn("theirs", text)
+
+    def test_the_answer_to_my_question_shows_while_i_am_responder(self):
+        mine = marker("ask", "codex", "claude", "2026-11-12T02:00:00Z", cid="c2", kind="question", prev="codex")
+        reply = marker("answer", "claude", "codex", "2026-11-12T03:00:00Z", cid="c3")
+        q = {("company", 'Responder:"codex" is:open'): [inbox_item(ISSUE, [mine, reply])]}
+        _, logs = run(board.inbox, {"company": WORK}, hub=FakeHub(agent_snap(item(ISSUE)), items_by_query=q), agent="codex")
+        self.assertTrue(any("answer from claude" in l for l in logs))
+
+    def test_a_notification_on_my_issues_pull_request_is_mine_and_not_others(self):
+        s = agent_snap(item(ISSUE, Agent="claude", prs=[open_pr("acme-co/ops#40")]))
+        notes = [{"id": "n5", "reason": "review", "title": "approved", "ref": "acme-co/ops#40", "url": "u5", "at": "2026-11-12T01:00:00Z"}]
+        q = {("company", 'Agent:"claude" is:open'): [inbox_item(ISSUE, [])]}
+        _, logs = run(board.inbox, {"company": WORK}, hub=FakeHub(s, items_by_query=q, notifications=notes))
+        self.assertIn("approved", "\n".join(logs))
+        _, logs = run(board.inbox, {"company": WORK}, hub=FakeHub(s, notifications=notes), agent="codex", env={})
+        self.assertNotIn("approved", "\n".join(logs))
+
+    def test_json_mode_keeps_warnings_off_the_json(self):
+        warned = []
+        boards = {"company": WORK, "personal": BOARDS["personal"]}
+        hub = FakeHub(agent_snap(item(ISSUE)), fail_boards=["personal"])
+        rc, logs = run(board.inbox, boards, hub=hub, as_json=True, warn=warned.append)
+        self.assertEqual(rc, 1)
+        json.loads("".join(logs))
+        self.assertTrue(any("personal" in w for w in warned))
 
     def test_notifications_about_no_issue_are_shown(self):
         s = agent_snap(item(ISSUE), {"item_id": "D1", "kind": "DRAFT_ISSUE", "archived": False, "title": "draft", "fields": {}})
