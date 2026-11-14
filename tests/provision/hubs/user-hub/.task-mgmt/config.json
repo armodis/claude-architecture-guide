@@ -1,0 +1,11 @@
+{
+  "owner": {
+    "login": "example-user",
+    "type": "user",
+    "repos": [{"name": "tasks"}],
+    "boards": [
+      {"name": "personal", "title": "Tasks", "repos": ["tasks"], "template": {"owner": "armodis-ai", "number": 7},
+       "number": 1, "hierarchy": ["Epic", "User Story"], "fixture_rest": {"Status": "Backlog"}, "parent_optional": ["Task"]}
+    ]
+  }
+}
