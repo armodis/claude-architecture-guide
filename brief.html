@@ -277,7 +277,7 @@
     <section class="pane is-active" id="overview">
       <p class="eyebrow">CLAUDE.md substrate</p>
       <h1>One system behind a <span class="hl">fleet of Claude sessions</span></h1>
-      <p class="lede">Layered CLAUDE.md instructions, skills, agents, and settings — scoped by domain and coordinated through GitHub — so every Claude session behaves consistently and works in concert, wherever it runs. Four concerns, one shared component. It's all public <a href="https://code.claude.com/docs/en/overview">Claude Code</a> features: clone <a href="https://github.com/armodis/claude-architecture-guide">the template repo</a>, edit one config block, and run <code>setup.sh</code> to stand up your own.</p>
+      <p class="lede">Layered CLAUDE.md instructions, skills, agents, and settings — scoped by domain and coordinated through GitHub — so every Claude session behaves consistently and works in concert, wherever it runs. Four concerns, one shared component. It's all public <a href="https://code.claude.com/docs/en/overview">Claude Code</a> features: clone <a href="https://github.com/armodis-ai/task-mgmt">the template repo</a>, edit one config block, and run <code>setup.sh</code> to stand up your own.</p>
 
       <div class="concerns">
         <button class="ccard" data-pane="separation">
@@ -436,8 +436,8 @@
       <div class="note"><b>Cross-OS, not just this laptop.</b> The <a href="https://code.claude.com/docs/en/settings#available-settings">permission allowlist</a> carries Windows entries (<code>powershell:*</code>, <code>copy:*</code>, <span class="path">/c/Users/…</span>) alongside the Linux ones — the same repo deploys on Linux <em>and</em> Windows.</div>
 
       <pre><code><span class="cmt"># clone the template, edit the config block, deploy</span>
-git clone https://github.com/armodis/claude-architecture-guide
-cd claude-architecture-guide
+git clone https://github.com/armodis-ai/task-mgmt
+cd task-mgmt
 $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
 ./setup.sh         <span class="cmt"># stow + symlink (backs up real files first)</span>
 ./verify.sh        <span class="cmt"># confirm the wiring</span></code></pre>
@@ -567,10 +567,10 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
 
       <h3>Start here — the template repo</h3>
       <div class="docs">
-        <a class="doclink" href="https://github.com/armodis/claude-architecture-guide" style="border-left-color: var(--personal);">
-          <div class="doclink__t" style="color: var(--personal);">armodis/claude-architecture-guide</div>
-          <div class="doclink__u">github.com/armodis/claude-architecture-guide</div>
-          <div class="doclink__d">The guide, this brief, and a runnable <code>template/</code> — clone it and run <code>./setup.sh</code>.</div>
+        <a class="doclink" href="https://github.com/armodis-ai/task-mgmt" style="border-left-color: var(--personal);">
+          <div class="doclink__t" style="color: var(--personal);">armodis-ai/task-mgmt</div>
+          <div class="doclink__u">github.com/armodis-ai/task-mgmt</div>
+          <div class="doclink__d">The model, this brief, and a runnable <code>template/</code> — clone it and run <code>./setup.sh</code>.</div>
         </a>
       </div>
 
@@ -579,7 +579,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
       <p class="prose" style="font-size:0.9rem">Then let a session drive — open Claude Code (terminal, or <a href="https://claude.ai/code">claude.ai/code</a>) and paste:</p>
       <div class="promptcard">
         <div class="promptcard__label">▸ paste into Claude Code</div>
-        <p class="promptcard__body">Read https://github.com/armodis/claude-architecture-guide end to end, then inspect my current setup (~/.claude, dotfiles, git config, GitHub account). Walk me through adopting it — the domain organization, the config substrate, and optionally the project board. Treat it as a fresh setup or a migration, whichever fits, and confirm each phase before changing anything.</p>
+        <p class="promptcard__body">Read https://github.com/armodis-ai/task-mgmt end to end, then inspect my current setup (~/.claude, dotfiles, git config, GitHub account). Walk me through adopting it — the domain organization, the config substrate, and optionally the project board. Treat it as a fresh setup or a migration, whichever fits, and confirm each phase before changing anything.</p>
       </div>
       <p class="prose" style="font-size:0.84rem; margin-top:0.7rem"><b>Fresh or migration — either works.</b> The agent inspects first; <code>setup.sh</code> backs up any real file before replacing it, so nothing is clobbered.</p>
 

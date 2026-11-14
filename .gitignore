@@ -1,2 +1,4 @@
 __pycache__/
 github.json
+.scratch/
+design/*/scratch/

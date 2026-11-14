@@ -1,4 +1,4 @@
-# Board automation for this repo, from the architecture guide.
+# Board automation for this repo, from task-mgmt.
 #
 #   - When a pull request merges: GitHub closes each issue it names with a closing keyword, even
 #     when another open pull request closes the same issue, and the board's "Item closed"
@@ -20,9 +20,9 @@
 #     command reads items from every repo on the board.
 #   - variable BOARD_CONFIG: the JSON of the board config (as in ~/.config/board/boards.json),
 #     with this repo listed in its board's "repos".
-#   - variable BOARD_REF: the guide commit to take the board command from, as a full commit SHA.
+#   - variable BOARD_REF: the task-mgmt commit to take the board command from, as a full commit SHA.
 #     The job runs that command with the board token, so pin it and bump it deliberately.
-#     Unset, the job takes the guide's main and warns.
+#     Unset, the job takes task-mgmt's main and warns.
 # Without a token or BOARD_CONFIG the job warns what's missing and passes. GitHub withholds
 # secrets from fork pull requests and from merges Dependabot makes itself, so those skip with a
 # notice; run `board guard owner/repo#N` by hand for those.
@@ -83,7 +83,7 @@ jobs:
           CONFIG_JSON: ${{ vars.BOARD_CONFIG }}
         run: |
           printf '%s' "$CONFIG_JSON" > "$BOARD_CONFIG"
-          curl -fsSL "https://raw.githubusercontent.com/armodis/claude-architecture-guide/${BOARD_REF}/template/board/.local/bin/board" -o "$RUNNER_TEMP/board"
+          curl -fsSL "https://raw.githubusercontent.com/armodis-ai/task-mgmt/${BOARD_REF}/template/board/.local/bin/board" -o "$RUNNER_TEMP/board"
           chmod +x "$RUNNER_TEMP/board"
       - name: Keep the board Status right for issues this merge closed
         if: steps.ready.outputs.go == 'true' && github.event_name == 'pull_request'
