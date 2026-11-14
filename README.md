@@ -37,7 +37,7 @@ git clone https://github.com/armodis-ai/task-mgmt
 cd task-mgmt
 $EDITOR substrate.conf          # your domains: DOMAINS=(work personal ...)
 ./setup.sh                      # stow + symlink into ~/: instructions, design loop, board command and skills
-# one hub per owner (an organization or your user account): its ops repo holds the owner's config
+# one hub per owner: start with your user account (the minimum); add a business organization's hub any time
 mkdir -p ~/work/your-org/ops/.task-mgmt && cp hub.example.json ~/work/your-org/ops/.task-mgmt/config.json
 mkdir -p ~/.config/task-mgmt && cp person.example.json ~/.config/task-mgmt/person.json
 $EDITOR ~/work/your-org/ops/.task-mgmt/config.json   # your owner, repos and boards
@@ -87,6 +87,8 @@ Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https:
 ## Setting up GitHub
 
 The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent agent sessions claim work and stay coordinated. Decide the shape first with [Organization, board, or repo?](#organization-board-or-repo): one organization per business, one board per product plus a company board, one repo per product.
+
+**Start with your own account.** The minimum setup is your GitHub user account with one hub repo (for example `~/personal/ops`) and its personal board. Business organizations are optional: add one whenever you need it, by giving it its own hub repo and listing that hub in your person layer. Nothing about the personal setup changes when you do.
 
 **Configuration lives in three layers:**
 
