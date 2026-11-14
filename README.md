@@ -37,21 +37,24 @@ git clone https://github.com/armodis-ai/task-mgmt
 cd task-mgmt
 $EDITOR substrate.conf          # your domains: DOMAINS=(work personal ...)
 ./setup.sh                      # stow + symlink into ~/: instructions, design loop, board command and skills
-cp github.example.json github.json
-$EDITOR github.json             # your organizations, repos and boards
+# one hub repo per owner (an organization or your user account), e.g. ~/work/your-org/ops
+mkdir -p ~/work/your-org/ops/.task-mgmt && cp hub.example.json ~/work/your-org/ops/.task-mgmt/config.json
+mkdir -p ~/.config/task-mgmt && cp person.example.json ~/.config/task-mgmt/person.json
+$EDITOR ~/work/your-org/ops/.task-mgmt/config.json ~/.config/task-mgmt/person.json
 ./provision.py                  # rehearse: what exists, what would be created
-./provision.py --live           # create the repos and boards, and write the board config
-./verify.sh                     # confirm the wiring, and that GitHub matches github.json
+./provision.py --live           # create the repos and boards, and set each repo's workflow variables
+./provision.py config           # write ~/.config/board/boards.json from the hubs
+./verify.sh                     # confirm the wiring, and that GitHub matches the hubs
 ```
 
-At the end, every organization in `github.json` has its repos (with the task-mgmt layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup`, `board-setup` and `preflight` skills work in every repo.
+At the end, every owner your hubs describe has its repos (with the task-mgmt layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and its boards in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup`, `board-setup` and `preflight` skills work in every repo.
 
 What ships in this repo:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
-- **[`provision.py`](provision.py)** — creates what's missing on GitHub from [`github.example.json`](github.example.json) (copied to `github.json`, which git ignores). Rehearses by default; `--live` applies. Re-runnable.
-- **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`) and an example board config (into `~/.config/board/`).
-- **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots, and a `provision.py` rehearsal when `github.json` exists).
+- **[`provision.py`](provision.py)** — creates what's missing on GitHub from the hub configs your person layer lists ([`hub.example.json`](hub.example.json), [`person.example.json`](person.example.json)), sets each repo's board workflow variables, and generates the `board` config (`provision.py config`). Rehearses by default; `--live` applies. Re-runnable. A single [`github.json`](github.example.json) still works in place of hubs.
+- **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`), its daily refresh timer, and the shipped board defaults that `provision.py config` starts from.
+- **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots, and, when a person layer or `github.json` exists, a `provision.py` rehearsal and a check that the board config matches the hubs).
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis-ai.github.io/task-mgmt/brief.html](https://armodis-ai.github.io/task-mgmt/brief.html)** (GitHub Pages), or open the file locally.
 
@@ -80,18 +83,30 @@ Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https:
 
 ## Setting up GitHub
 
-The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent Claude sessions claim work and stay coordinated. [`provision.py`](provision.py) sets up the GitHub side from `github.json`: one entry per owner (an organization or your user account), each with its repos and boards. Decide the shape first with [Organization, board, or repo?](#organization-board-or-repo): one organization per business, one board per product plus a company board, one repo per product.
+The board is the shared-state plane for the [multi-agent workflow](#part-3-multi-agent-workflow-via-github) — where independent agent sessions claim work and stay coordinated. Decide the shape first with [Organization, board, or repo?](#organization-board-or-repo): one organization per business, one board per product plus a company board, one repo per product.
 
-For each owner, `provision.py`:
+**Configuration lives in three layers:**
+
+| Layer | File | Holds |
+|---|---|---|
+| Hub | `<hub>/.task-mgmt/config.json` in one repo per owner (its `ops` repo) | The owner's repos and boards: each board's number, template, repos, hierarchy and Themes, and `"automation": false` on repos without the board workflow |
+| Person | `~/.config/task-mgmt/person.json` | Who operates (`operator`), which agent families work (`agents`), the hub folders to read (`hubs`), and overrides of the shipped defaults (`defaults`) |
+| Release | `template/board/.config/board/boards.example.json` | The shipped defaults: required fields, effort levels, fixture rules |
+
+`provision.py config` merges them into `~/.config/board/boards.json`, the file `board` reads, without calling GitHub; `config --check` reports any difference. Edit a hub, not the generated file: commit the change in the hub repo, then run `provision.py --live` (for the repos' variables) and `provision.py config` on each machine.
+
+For each owner in the hubs, `provision.py`:
 
 1. **Checks the organization exists.** GitHub has no API to create one, so the report links the page where you create it ([github.com/account/organizations/new](https://github.com/account/organizations/new)); run it again afterwards.
-2. **Creates each missing repo**, private unless `"public": true`, and pushes the [File Conventions](#file-conventions) layout from a local clone at the repo's `path`: README, AGENTS.md, STATUS.md, `design/`, `docs/decisions/` and `.gitignore`, plus `backend/`, `frontend/`, `scripts/` and `.env.example` for `"kind": "product"`. It adds the `test-fixture` label.
-3. **Copies each missing board** from its template, links the board's repos, and adds its Themes (keeping existing options and their ids).
+2. **Creates each missing repo**, private unless `"public": true`, and pushes the [File Conventions](#file-conventions) layout from a local clone at the repo's `path` (default `~/<owner>/<repo>`; the folder must be empty): README, AGENTS.md, STATUS.md, `design/`, `docs/decisions/` and `.gitignore`, the board workflow, plus `backend/`, `frontend/`, `scripts/` and `.env.example` for `"kind": "product"`. It adds the `test-fixture` label.
+3. **Copies each missing board** from its template, links the board's repos, adds its Themes (keeping existing options and their ids), and adds the Agent and Responder fields with your agents. A new board's `number` goes into the hub config once the report names it.
 4. **Checks the built-in workflows.** GitHub has no API to enable them, and a copy doesn't carry "Auto-add to project", so the report lists what's off with a link to that board's Workflows page. Set them as in step 4 of the checklist below, then run it again.
-5. **Checks each repo's board automation:** the board workflow (new repos get it), a token for it (a GitHub App's `BOARD_APP_ID` variable and `BOARD_APP_KEY` secret, or a `BOARD_TOKEN` secret), the `BOARD_CONFIG` variable, and the `BOARD_REF` variable that pins the board command, at repo or organization level. The report lists what's missing; the token is yours to create and add. Without a token or the config the workflow says so and skips, which matters only for issues that several pull requests close and for repos that release by tag; a repo that needs neither is marked `"automation": false` in `github.json` and isn't checked.
-6. **Adds each board to the `board` config**, `~/.config/board/boards.json`, with its hierarchy read from the board's Category field. Boards already in the config are left as they are.
+5. **Sets each repo's board automation variables:** `BOARD_CONFIG` (the defaults plus the boards that list the repo) and `BOARD_REF` (the commit SHA of the hub's `version` tag), compared in a rehearsal, set and read back with `--live`, and left alone where they're set at organization level. It checks for a token (a GitHub App's `BOARD_APP_ID` variable and `BOARD_APP_KEY` secret, or a `BOARD_TOKEN` secret) and reports one that's missing; the token is yours to create and add. Without a token the workflow says so and skips, which matters only for issues that several pull requests close and for repos that release by tag; a repo that needs neither is marked `"automation": false` and isn't checked.
+6. **Checks the `board` config** matches what `provision.py config` would write.
 
-It finds what exists by name, creates only what's missing, and exits 0 once everything matches `github.json`, or 2 while steps remain.
+It finds what exists by name, creates only what's missing, and exits 0 once everything matches the hubs, or 2 while steps remain. Read-only boards (`"read_only": true`, for an owner whose board no repo feeds yet) get no workflow or field checks.
+
+**The test fixture.** `board`'s live test runs against standing `test-fixture` issues: one Epic, one User Story under it and at least two Tasks. Keep them in a `sandbox` repo with its own Sandbox board for each owner type you use (one organization, one user account), so the real boards and hub issue lists stay clean: list the repo (`"automation": false`) and the board in that owner's hub, and provision creates both.
 
 **The templates** it copies from are public GitHub [Projects templates](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) with the fields and lifecycle this guide describes. You can also open one and choose **Copy**:
 
@@ -105,10 +120,10 @@ It finds what exists by name, creates only what's missing, and exits 0 once ever
 2. **Add the fields the policy reads:** `Status` (single-select: Todo · Backlog · In Progress · In Review · Done, plus Pending Release where repos release by tag), `Priority` (P0–P3), `Effort` (1, 2, 3, 5, 8: the amount of work), `Complexity` (Trivial · Low · Medium · Medium-High · High: how hard it is), and `Theme` (your product/platform pillars — you define the set). Add `Category` if you track a hierarchy (Epic / Story / Task). See [Recommended custom field schema](#recommended-custom-field-schema).
 3. **Define function labels** (e.g. `area:pipeline`) on the repos whose issues the agents pick up, so the queue is filterable.
 4. **Turn on the built-in workflows** (board menu → Workflows; the API can't enable them): Item closed → Done, Item reopened → In Progress, Pull request linked to issue → In Review, Pull request merged → Done, Auto-close issue, Item added to project (issues only) → Backlog, Auto-add sub-issues to project, and Auto-add to project (one per repo on paid plans; the Free plan allows one per board, so add other repos' issues yourself). "Item added to project" can overwrite a Status set at filing, so read Status back after adding an issue that should be Todo. Boards whose repos release by tag also need a release automation: see [Statuses, readiness and required fields](#statuses-readiness-and-required-fields).
-5. **Add the repo automation** to each repo that feeds the board: copy [`template/repo/.github/workflows/board.yml`](template/repo/.github/workflows/board.yml), then in the repo's (or organization's) Settings > Secrets and variables > Actions add a token, a `BOARD_CONFIG` variable (the board config JSON), and a `BOARD_REF` variable holding the guide commit SHA to run the board command from. The workflow runs that command with the board token, so pin it and bump it when you take a new guide version; unpinned, it runs the guide's `main` and warns. For an organization board, the token is a GitHub App installed on the organization and the repos that feed the board, with organization Projects read and write and repository Issues, Pull requests and Contents read: its id as the `BOARD_APP_ID` variable and its private key as the `BOARD_APP_KEY` secret, and the workflow mints a short-lived token each run. For a user board, which Apps can't reach, it's a personal access token with the `repo` and `project` scopes as the `BOARD_TOKEN` secret. A repo whose issues each have one pull request, and that doesn't release by tag, can skip this.
+5. **Add the repo automation** to each repo that feeds the board: copy [`template/repo/.github/workflows/board.yml`](template/repo/.github/workflows/board.yml), then in the repo's (or organization's) Settings > Secrets and variables > Actions add a token, a `BOARD_CONFIG` variable (the board config JSON), and a `BOARD_REF` variable holding the task-mgmt commit SHA to run the board command from (`provision.py --live` sets both variables). The workflow runs that command with the board token, so pin it and bump it when you take a new task-mgmt release; unpinned, it runs task-mgmt's `main` and warns. For an organization board, the token is a GitHub App installed on the organization and the repos that feed the board, with organization Projects read and write and repository Issues, Pull requests and Contents read: its id as the `BOARD_APP_ID` variable and its private key as the `BOARD_APP_KEY` secret, and the workflow mints a short-lived token each run. For a user board, which Apps can't reach, it's a personal access token with the `repo` and `project` scopes as the `BOARD_TOKEN` secret. A repo whose issues each have one pull request, and that doesn't release by tag, can skip this.
 6. **Adopt the working rules** from [Part 3](#part-3-multi-agent-workflow-via-github): read `STATUS.md` first, claim by flipping `Status → In Progress` and assigning yourself, select by `Priority, Effort, Created`, implement in a [git worktree](https://git-scm.com/docs/git-worktree), escalate irreversible/outward-facing actions to a human.
 
-The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Once one board is configured to your liking you can [save it as an org Projects template](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) and point `github.json` at it.
+The visual [brief.html](brief.html) "Portfolio Mgmt" panel is a one-screen version of this. Once one board is configured to your liking you can [save it as an org Projects template](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-project-templates-in-your-organization) and point a hub board's `template` at it.
 
 ***
 
@@ -550,7 +565,7 @@ Work only a person can do is assigned to that person while it's still in Todo or
 
 ### The board command and skills
 
-Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences in `~/.config/board/boards.json` (owner, hierarchy, statuses, the repos that feed it, whether they release by tag, read-only). Start from [`boards.example.json`](template/board/.config/board/boards.example.json); `provision.py` writes the entries for you.
+Agents read and change boards through one command, [`board`](template/board/.local/bin/board): Python standard library over `gh api graphql`, with each board's differences in `~/.config/board/boards.json` (owner, hierarchy, statuses, the repos that feed it, whether they release by tag, read-only). `provision.py config` generates it from the hub configs and the shipped defaults in [`boards.example.json`](template/board/.config/board/boards.example.json) (see [Setting up GitHub](#setting-up-github)).
 
 - **Reads** work from a snapshot of each board in `~/.local/state/board`: `snapshot`, `tree`, `select`, `hygiene`. A snapshot older than a day is pulled again on read, and a daily timer (`board-refresh.timer`, enabled by `setup.sh`) keeps them fresh. `search` is a live title search. Inside a repo, `.` names the repo's board.
 - **Writes** are JSON change plans: `check` prints the dry run, and `apply` writes the plan and reads back every write and every configured board. A plan that is hard to undo (close, reparent, change level or type, remove, edit options, cross owners, or touch many items) waits for `--approved`.

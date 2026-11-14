@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Substrate — Domain Hierarchy Brief</title>
+<title>task-mgmt Brief</title>
 <style>
   :root {
     --bg: #eceef2; --grid: rgba(22,32,44,0.045); --surface: #f7f9fb; --surface-2: #eef1f5;
@@ -253,8 +253,8 @@
 <div class="shell">
   <aside class="side">
     <div class="brand">
-      <div class="brand__mark"><span class="sq"></span>SUBSTRATE</div>
-      <div class="brand__sub">~/personal/dotfiles</div>
+      <div class="brand__mark"><span class="sq"></span>TASK-MGMT</div>
+      <div class="brand__sub">armodis-ai/task-mgmt</div>
     </div>
     <nav class="nav" aria-label="Sections">
       <span class="nav__label">Brief</span>
@@ -275,7 +275,7 @@
 
     <!-- OVERVIEW -->
     <section class="pane is-active" id="overview">
-      <p class="eyebrow">CLAUDE.md substrate</p>
+      <p class="eyebrow">task-mgmt</p>
       <h1>One system behind a <span class="hl">fleet of Claude sessions</span></h1>
       <p class="lede">Layered CLAUDE.md instructions, skills, agents, and settings — scoped by domain and coordinated through GitHub — so every Claude session behaves consistently and works in concert, wherever it runs. Four concerns, one shared component. It's all public <a href="https://code.claude.com/docs/en/overview">Claude Code</a> features: clone <a href="https://github.com/armodis-ai/task-mgmt">the template repo</a>, edit one config block, and run <code>setup.sh</code> to stand up your own.</p>
 
@@ -355,6 +355,7 @@
           <p class="domain__root">~/work/</p>
           <p class="domain__note">Day-job work. Each sub-dir is a separate repository clone with its own AGENTS.md.</p>
           <ul class="repo-list">
+            <li><span class="r">ops/</span><span class="d">the org's hub: its task-mgmt config</span></li>
             <li><span class="r">app/</span><span class="d">main application</span></li>
             <li><span class="r">infra/</span><span class="d">infrastructure</span></li>
             <li><span class="r">…</span><span class="d">your other work repos</span></li>
@@ -366,7 +367,8 @@
           <p class="domain__root">~/personal/</p>
           <p class="domain__note">Personal / family. Less-formal tone; extra care on legal, finance, health.</p>
           <ul class="repo-list">
-            <li><span class="r">dotfiles/</span><span class="d">this substrate</span></li>
+            <li><span class="r">dotfiles/</span><span class="d">your machine setup and person layer</span></li>
+            <li><span class="r">ops/</span><span class="d">your account's hub</span></li>
             <li><span class="r">&lt;domain&gt;/</span><span class="d">one repo per personal domain</span></li>
             <li><span class="r">…</span><span class="d">your other personal repos</span></li>
           </ul>
@@ -430,6 +432,17 @@
         </ul>
       </div>
 
+      <h3>Where the configuration lives</h3>
+      <p class="prose">Board settings are written once, by the owner they describe, and generated into the file the <code>board</code> command reads. Edit a hub; never the generated file.</p>
+      <div class="card">
+        <ul class="repo-list" style="gap:0.55rem">
+          <li><span class="r">hub</span><span class="d"><span class="path">&lt;owner&gt;/ops/.task-mgmt/config.json</span> — that owner's repos and boards: numbers, templates, hierarchy, which repos run the board workflow</span></li>
+          <li><span class="r">person</span><span class="d"><span class="path">~/.config/task-mgmt/person.json</span> — who operates, which agents work, which hubs to read</span></li>
+          <li><span class="r">release</span><span class="d">shipped defaults, installed from a pinned tag; board workflows pin the same commit</span></li>
+          <li><span class="r">generated</span><span class="d"><span class="path">~/.config/board/boards.json</span> — <code>provision.py config</code> merges the three</span></li>
+        </ul>
+      </div>
+
       <h3>What travels in settings.json</h3>
       <p class="prose">Model, effort level, enabled plugins, permission allowlist, statusline command, theme — the whole operating profile moves with the repo. Every key is documented in the <a href="https://code.claude.com/docs/en/settings">settings reference</a>.</p>
 
@@ -438,9 +451,14 @@
       <pre><code><span class="cmt"># clone the template, edit the config block, deploy</span>
 git clone https://github.com/armodis-ai/task-mgmt
 cd task-mgmt
-$EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
-./setup.sh         <span class="cmt"># stow + symlink (backs up real files first)</span>
-./verify.sh        <span class="cmt"># confirm the wiring</span></code></pre>
+$EDITOR substrate.conf  <span class="cmt"># set DOMAINS=(work personal ...)</span>
+./setup.sh              <span class="cmt"># stow + symlink (backs up real files first)</span>
+<span class="cmt"># a hub config per owner, and your person layer</span>
+cp hub.example.json ~/work/your-org/ops/.task-mgmt/config.json
+cp person.example.json ~/.config/task-mgmt/person.json
+./provision.py --live   <span class="cmt"># repos, boards, workflow variables</span>
+./provision.py config   <span class="cmt"># generate the board config</span>
+./verify.sh             <span class="cmt"># confirm the wiring</span></code></pre>
       <p class="prose" style="font-size:0.85rem; margin-top:0.8rem">The repo ships a <code>template/</code> scaffold (universal Layer 0 + example <code>work</code>/<code>personal</code> domain roots + shell/git dotfiles). Copy it into your own dotfiles repo, or run in place.</p>
     </section>
 
@@ -472,7 +490,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
         <div class="surf"><div class="surf__t">Chat / Mobile</div><div class="surf__d">Reads/writes the same GitHub state; push notifications on.</div><div class="surf__b repo">shared state</div></div>
       </div>
 
-      <div class="note"><b>Why it composes.</b> Because task state lives in GitHub — issues, board Status, <code>STATUS.md</code>, worktrees — plus any <a href="https://code.claude.com/docs/en/mcp">MCP servers</a> you connect, a web session, the desktop app, and a laptop CLI collaborate on the same work without sharing local state. The substrate makes each surface <em>consistent</em>; externalized state makes them <em>coordinated</em>.</div>
+      <div class="note"><b>Why it composes.</b> Because task state lives in GitHub — issues, board Status, <code>STATUS.md</code>, worktrees — plus any <a href="https://code.claude.com/docs/en/mcp">MCP servers</a> you connect, a web session, the desktop app, and a laptop CLI collaborate on the same work without sharing local state. task-mgmt makes each surface <em>consistent</em>; externalized state makes them <em>coordinated</em>.</div>
       <p class="prose" style="font-size:0.85rem">Want to watch the fleet from your phone regardless of surface? The optional <a href="https://github.com/armodis/tmux-rc">tmux-rc</a> add-on reads your <code>tmux</code> panes and alerts you when any agent is blocked — see <button class="linklike" data-pane="build">Build it</button>.</p>
     </section>
 
@@ -488,7 +506,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
           <a href="https://github.com/orgs/armodis-ai/projects/9">◆ Product Roadmap →</a>
           <a href="https://github.com/orgs/armodis-ai/projects/7">◆ Personal Task Mgmt →</a>
         </div>
-        <code>provision.py</code> copies them for every board in your <code>github.json</code>; without an org of your own, build one from the fields below by hand.</div>
+        <code>provision.py</code> copies them for every board in your hub configs; without an org of your own, build one from the fields below by hand.</div>
 
       <h3>Status lifecycle</h3>
       <div class="stepper">
@@ -579,7 +597,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
       <p class="prose" style="font-size:0.9rem">Then let a session drive — open Claude Code (terminal, or <a href="https://claude.ai/code">claude.ai/code</a>) and paste:</p>
       <div class="promptcard">
         <div class="promptcard__label">▸ paste into Claude Code</div>
-        <p class="promptcard__body">Read https://github.com/armodis-ai/task-mgmt end to end, then inspect my current setup (~/.claude, dotfiles, git config, GitHub account). Walk me through adopting it — the domain organization, the config substrate, and optionally the project board. Treat it as a fresh setup or a migration, whichever fits, and confirm each phase before changing anything.</p>
+        <p class="promptcard__body">Read https://github.com/armodis-ai/task-mgmt end to end, then inspect my current setup (~/.claude, dotfiles, git config, GitHub account). Walk me through adopting it — the domain organization, the config layers (hubs and the person layer), and optionally the project boards. Treat it as a fresh setup or a migration, whichever fits, and confirm each phase before changing anything.</p>
       </div>
       <p class="prose" style="font-size:0.84rem; margin-top:0.7rem"><b>Fresh or migration — either works.</b> The agent inspects first; <code>setup.sh</code> backs up any real file before replacing it, so nothing is clobbered.</p>
 
@@ -646,7 +664,7 @@ $EDITOR setup.sh   <span class="cmt"># set DOMAINS=(work personal ...)</span>
         <a class="doclink" href="https://github.com/armodis/tmux-rc" style="border-left-color: var(--personal);">
           <div class="doclink__t" style="color: var(--personal);">tmux-rc — watch agents from your phone</div>
           <div class="doclink__u">github.com/armodis/tmux-rc</div>
-          <div class="doclink__d">A local daemon (by Shapor Naghibzadeh) that reads a <code>tmux</code> pane and serves a phone dashboard — status, blocked-on-a-question alerts, tap-to-answer. Vendor-agnostic; independent of the substrate. Fork &amp; adapt.</div>
+          <div class="doclink__d">A local daemon (by Shapor Naghibzadeh) that reads a <code>tmux</code> pane and serves a phone dashboard — status, blocked-on-a-question alerts, tap-to-answer. Vendor-agnostic; independent of task-mgmt. Fork &amp; adapt.</div>
         </a>
       </div>
 

@@ -16,13 +16,13 @@ For a whole setup (organizations, repos and boards from a config file), run task
 
 ## 2. Config
 
-Add the board to `boards.json` so `board` can work on it:
+Add the board to the owner's hub config (`<hub>/.task-mgmt/config.json`, under `owner.boards`), then run `provision.py config` to regenerate `boards.json` so `board` can work on it. Without hubs, add it to `boards.json` directly. The entry carries:
 
-- `owner`, `owner_type` (`organization` or `user`), `number`.
+- `number`, plus `owner` and `owner_type` (`organization` or `user`) in `boards.json`; a hub entry takes them from the hub's owner.
 - `repos`: the repos that feed it, so `board .` and `board which` find it from inside a repo.
 - `hierarchy`: the Category levels, top first; `outside_hierarchy` for levels off the ladder; `parent_optional` for levels that may stand alone (for example `["Task"]` on a personal board).
-- `release`: `none`, or `tags` when its repos release by tag.
-- `statuses`, only to rename one (for example `{"done": "Shipped"}`); the rest keep their defaults.
+- `release`: `none`, or `tags` when its repos release by tag (in a hub, `"release": "tags"` on the repo).
+- `statuses` (in `boards.json` only), only to rename one (for example `{"done": "Shipped"}`); the rest keep their defaults.
 - `read_only: true` for a board agents may only read.
 
 Delete any example boards you don't use: `apply` and `claim` read back every configured board, and a placeholder makes them fail. Then `board fields <board>` and `board snapshot <board>` to confirm the command can read it.
