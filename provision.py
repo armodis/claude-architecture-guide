@@ -524,9 +524,10 @@ class Run:
         """The board workflow keeps Status right for issues with several closing pull requests and
         moves released items to Done. It needs a token (a GitHub App's BOARD_APP_ID variable and
         BOARD_APP_KEY secret, or a BOARD_TOKEN secret) and the BOARD_CONFIG variable, at repo or
-        organization level, and should pin the board command with the BOARD_REF variable. Adding
-        them is the owner's to do, so they are reported, never set.
-        A repo marked "automation": false in github.json is skipped."""
+        organization level, and should pin the board command with the BOARD_REF variable. The token
+        is the owner's to add, so it is reported, never set. From hubs, provision sets the two
+        variables (variables()); from a github.json it only checks they exist.
+        A repo marked "automation": false is skipped."""
         if r.get("automation") is False:
             return
         if self.gh.rest(f"repos/{name}/contents/.github/workflows/board.yml") is None:
