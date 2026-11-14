@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup.sh — deploy a multi-domain Claude Code substrate.
 #
-# Companion to README.md (the architecture guide) and brief.html (the visual
+# Companion to README.md (task-mgmt) and brief.html (the visual
 # overview). This is the runnable version of the pattern: it wires a single
 # source-of-truth repo into your home directory with GNU Stow + symlinks, so
 # every Claude Code session inherits the right layered instructions.
@@ -16,9 +16,9 @@
 # first, never overwritten. Re-run any time.
 #
 # Usage:
-#   git clone https://github.com/armodis/claude-architecture-guide
-#   cd claude-architecture-guide
-#   $EDITOR setup.sh          # edit the CONFIG block below
+#   git clone https://github.com/armodis-ai/task-mgmt
+#   cd task-mgmt
+#   $EDITOR substrate.conf
 #   ./setup.sh
 #   ./verify.sh
 

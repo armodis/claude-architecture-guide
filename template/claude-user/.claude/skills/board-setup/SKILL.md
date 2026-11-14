@@ -1,11 +1,11 @@
 ---
 name: board-setup
-description: Set up a GitHub project board for the operating model — create or copy it from a template, set the fields and statuses, turn on the built-in workflows, link its repos, add it to the `board` config, and add the board automation workflow to its repos. Use when the user asks to create, copy or configure a project board, set up a board for a new product, or check that a board matches the guide's schema.
+description: Set up a GitHub project board for the operating model — create or copy it from a template, set the fields and statuses, turn on the built-in workflows, link its repos, add it to the `board` config, and add the board automation workflow to its repos. Use when the user asks to create, copy or configure a project board, set up a board for a new product, or check that a board matches the board schema.
 ---
 
 # board-setup
 
-For a whole setup (organizations, repos and boards from a config file), run the guide's `provision.py` and use this skill for what it reports and for one-off boards.
+For a whole setup (organizations, repos and boards from a config file), run task-mgmt's `provision.py` and use this skill for what it reports and for one-off boards.
 
 **Inputs:** the owner (organization or user), the template to copy, the repos that feed the board, whether those repos release by tag, and the board config at `~/.config/board/boards.json`.
 
@@ -59,7 +59,7 @@ Read them back afterwards: `gh api graphql` on the project's `workflows { nodes 
 
 ## 5. Repo automation
 
-Copy the guide's `template/repo/.github/workflows/board.yml` into each repo. When a pull request merges, it keeps the board Status of the issues it closes right (`board guard`: In Review while another closing pull request is open, Done or Pending Release after the last) and, on a published release, moves released items to Done (`board release`). Its header lists the secret and variables the repo needs; setting the secret is the user's to do.
+Copy task-mgmt's `template/repo/.github/workflows/board.yml` into each repo. When a pull request merges, it keeps the board Status of the issues it closes right (`board guard`: In Review while another closing pull request is open, Done or Pending Release after the last) and, on a published release, moves released items to Done (`board release`). Its header lists the secret and variables the repo needs; setting the secret is the user's to do.
 
 ## 6. Report
 

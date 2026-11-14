@@ -1,4 +1,4 @@
-# Multi-Domain Claude Code Architecture: A General Guide
+# task-mgmt: an operating model and tools for running personal and work domains with agents
 
 **Purpose:** A working architecture for using Claude across multiple distinct life or work domains — keeping context appropriate, configuration shared where it should be shared, and isolated where it should be isolated.
 
@@ -12,9 +12,9 @@
 
 The fastest way to adopt this is to let a Claude Code session drive. Open Claude Code (terminal, or [claude.ai/code](https://claude.ai/code) on the web) and paste:
 
-> Read the repo at https://github.com/armodis/claude-architecture-guide end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and the **GitHub side** (organizations, repos and project boards). Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
+> Read the repo at https://github.com/armodis-ai/task-mgmt end to end. Then inspect my current setup — any existing `~/.claude`, dotfiles, git config, and GitHub account. Walk me through adopting this architecture: the domain **organization**, the config **substrate**, and the **GitHub side** (organizations, repos and project boards). Treat it as a fresh setup or a migration from existing Claude Code usage — check which, and tailor the plan to what I already have. Confirm each phase with me before changing anything.
 
-The agent has enough here to do the work: this guide is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and [`provision.py`](provision.py) puts the GitHub side in place: organizations, repos, project boards and the board config ([Setting up GitHub](#setting-up-github)). The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
+The agent has enough here to do the work: this repo is the model, [`setup.sh`](setup.sh) + [`template/`](template/) deploy the substrate mechanically, and [`provision.py`](provision.py) puts the GitHub side in place: organizations, repos, project boards and the board config ([Setting up GitHub](#setting-up-github)). The template ships the operating skills that are the same everywhere, the [design loop](#the-design-loop) and the [board command and its skills](#the-board-command-and-skills); the agent authors the skills specific to your work with you.
 
 **Prerequisites:** [Claude Code](https://code.claude.com/docs/en/overview), [GNU Stow](https://www.gnu.org/software/stow/), Python 3, `git` with `user.name` and `user.email` set, and [`gh`](https://cli.github.com/) logged in with the `repo`, `project`, `read:org` and `workflow` scopes (`gh auth login`, then `gh auth refresh -s project,read:org,workflow`).
 
@@ -30,11 +30,11 @@ The agent has enough here to do the work: this guide is the model, [`setup.sh`](
 
 ## Quick start (run it)
 
-This repo is both the guide and a runnable template. To stand up the architecture on your own machine:
+This repo is both the written model and a runnable template. To stand up the architecture on your own machine:
 
 ```bash
-git clone https://github.com/armodis/claude-architecture-guide
-cd claude-architecture-guide
+git clone https://github.com/armodis-ai/task-mgmt
+cd task-mgmt
 $EDITOR substrate.conf          # your domains: DOMAINS=(work personal ...)
 ./setup.sh                      # stow + symlink into ~/: instructions, design loop, board command and skills
 cp github.example.json github.json
@@ -44,16 +44,35 @@ $EDITOR github.json             # your organizations, repos and boards
 ./verify.sh                     # confirm the wiring, and that GitHub matches github.json
 ```
 
-At the end, every organization in `github.json` has its repos (with this guide's layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup`, `board-setup` and `preflight` skills work in every repo.
+At the end, every organization in `github.json` has its repos (with the task-mgmt layout committed), its boards (copied from the templates, linked to their repos, with their Themes), and an entry in `~/.config/board/boards.json`. `/design-loop`, `board` and the `item`, `pickup`, `board-setup` and `preflight` skills work in every repo.
 
-What ships alongside this guide:
+What ships in this repo:
 
 - **[`setup.sh`](setup.sh)** — config-driven deployer. Set your domains at the top; it stows the universal Layer 0 into `~/.claude/`, links each domain's root `CLAUDE.md`, and optionally aggregates skill overlays. Idempotent; backs up real files to `~/.claude-substrate-backup/` before replacing.
 - **[`provision.py`](provision.py)** — creates what's missing on GitHub from [`github.example.json`](github.example.json) (copied to `github.json`, which git ignores). Rehearses by default; `--live` applies. Re-runnable.
 - **[`template/board/`](template/board/)** — the `board` command (into `~/.local/bin`) and an example board config (into `~/.config/board/`).
 - **[`verify.sh`](verify.sh)** — post-setup checks (symlink integrity, domain-neutral Layer 0, per-domain roots, and a `provision.py` rehearsal when `github.json` exists).
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
-- **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis.github.io/claude-architecture-guide/brief.html](https://armodis.github.io/claude-architecture-guide/brief.html)** (GitHub Pages), or open the file locally.
+- **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis-ai.github.io/task-mgmt/brief.html](https://armodis-ai.github.io/task-mgmt/brief.html)** (GitHub Pages), or open the file locally.
+
+- **[`template/claude-restore/`](template/claude-restore/)** — `claude-restore` and `claude-provider` (into `~/.local/bin`): keep named Claude Code sessions alive across reboots in tmux, and move them between the Anthropic API and Amazon Bedrock. The MIT license covers `template/claude-restore/` ([`LICENSE`](template/claude-restore/.local/share/claude-restore/LICENSE)); the rest of the repo is CC BY 4.0 ([`LICENSE`](LICENSE)). See its [README](template/claude-restore/.local/share/claude-restore/README.md).
+- **[`AGENTS.md`](AGENTS.md)**, **[`STATUS.md`](STATUS.md)**, **[`docs/decisions/`](docs/decisions/)** — conventions for agents working on this repo, the handoff note they read first and update, and a home for decision records.
+
+### Install a pinned release
+
+Releases are git tags `vX.Y.Z`. To install one instead of a checkout:
+
+```bash
+tag=v0.2.0
+sha=$(git ls-remote https://github.com/armodis-ai/task-mgmt "refs/tags/$tag" "refs/tags/$tag^{}" | awk -v p="refs/tags/$tag^{}" '$2==p{x=$1}{a=$1}END{print x?x:a}')
+[ -n "$sha" ] || { echo "tag $tag not found" >&2; exit 1; }
+dir=~/.local/share/task-mgmt/$tag
+mkdir -p "$dir" && curl -fsSL "https://github.com/armodis-ai/task-mgmt/archive/$sha.tar.gz" | tar -xz --strip-components=1 -C "$dir"
+printf 'repo=armodis-ai/task-mgmt\nversion=%s\nsha=%s\n' "$tag" "$sha" > "$dir/.task-mgmt-release"
+cd "$dir" && ./setup.sh && ./verify.sh
+```
+
+`setup.sh` and `verify.sh` work from the extracted folder (no `.git` needed), and `verify.sh` prints the release from `.task-mgmt-release`. A change reaches an installation only when its pin moves: install the newer tag and re-run its `setup.sh`. Board workflows pin the `BOARD_REF` variable to that release's commit SHA.
 
 Requires [GNU Stow](https://www.gnu.org/software/stow/) and [Claude Code](https://code.claude.com/docs/en/overview). The rest of this document explains *why* the pieces are shaped the way they are — read on for the mental model, then tailor the template to your own domains.
 
@@ -115,7 +134,7 @@ Claude has several distinct surfaces that share a brand but differ in mechanics.
 | **Claude Design** | Web (claude.ai/design) | Visual collaboration tool | Visual artifacts; handoff bundle to Claude Code |
 | **Browser extension** | Browser | Live DOM; bridges to local Claude Code | Browser actions |
 
-Two facts do most of the work in this guide:
+Two facts do most of the work in task-mgmt:
 
 1. **Local Claude Code resolves config from the directory tree** — but the three resolution mechanisms behave differently (see Config Resolution below). CLAUDE.md merges up the whole tree; slash commands stop at the first repo boundary; memory is keyed to the exact launch directory. The practical upshot: **launch from inside the repo you're working on.**
 2. **Web Claude Code only sees the single repo you clone.** Anything you want available in a web session has to be in that repo's `.claude/`. Team skills committed there come along; user-level operating skills in `~/.claude/skills/` don't, so a repo that needs them in the cloud carries a copy (see [Stow Operations](#stow-operations)).
@@ -153,7 +172,7 @@ Memory follows the launch cwd. Launch from `~/work/some-repo/` and memory comes 
 
 ## Scoping Strategy
 
-The architecture in this guide assumes you have **distinct domains** that should not bleed into each other. The most common shape:
+The architecture in task-mgmt assumes you have **distinct domains** that should not bleed into each other. The most common shape:
 
 - **Work** — your day job, where you spend most professional time
 - **Personal** — everything else, often subdivided
@@ -1077,7 +1096,7 @@ Stow refuses to overwrite real files (only symlinks under its management). Move 
 
 ## When submodules become necessary
 
-The architecture in this guide avoids submodules in most cases — directory-tree resolution does the job for local Claude Code. Submodules become useful when:
+The architecture in task-mgmt avoids submodules in most cases — directory-tree resolution does the job for local Claude Code. Submodules become useful when:
 
 1. **Web Claude Code sessions need shared skills.** Cloud VMs only see one cloned repo. To make a skill available in a web session, it has to be in that repo — directly or via submodule.
 2. **A skill is genuinely cross-domain.** A skill that runs in both work and personal contexts is a natural candidate for a shared-skills repo referenced as a submodule from each domain.
@@ -1142,9 +1161,9 @@ The underlying constraint: claude.ai's code execution sandbox blocks `api.github
 | **Substrate (multi-agent)** | The shared state — usually GitHub repo + Project board — that multiple Claude sessions read from and write to |
 | **Closing keyword** | `closes #N` / `fixes #N` / `resolves #N` in a PR body; triggers GitHub's auto-link and status automation |
 
-## Adapting This Guide
+## Adapting task-mgmt
 
-If you want to fork this guide for your own setup, the parts you'll customize:
+If you want to fork this repo for your own setup, the parts you'll customize:
 
 - **Domain names** — pick names that fit your life (`~/work/`, `~/clients/`, `~/family/`, etc.)
 - **Theme vocabulary** — Project board Theme options reflect your specific domains' subdivisions
@@ -1161,4 +1180,4 @@ The load-bearing parts that should stay:
 
 ***
 
-**End of guide.** Hand this to a Claude Code session along with a description of your current setup, and ask for a tailored migration plan.
+**End of task-mgmt model.** Hand this to a Claude Code session along with a description of your current setup, and ask for a tailored migration plan.
