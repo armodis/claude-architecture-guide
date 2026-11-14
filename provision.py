@@ -25,7 +25,7 @@ becomes a board entry, and a board without "number" is an error (run provision t
 For each owner, provision:
 
   1. checks the organization exists (GitHub has no API to create one: the report links the page);
-  2. creates each missing repo, private by default, from the guide's layout committed first in a
+  2. creates each missing repo, private by default, from task-mgmt's repo layout committed first in a
      local clone at <path> (README.md, AGENTS.md, STATUS.md, design/, docs/decisions/, .gitignore,
      the board workflow in .github/workflows/, and backend/, frontend/, scripts/ for a product
      repo), then pushed by `gh repo create --source --push`; and adds the test-fixture label;
@@ -258,8 +258,15 @@ def load_hub(folder, names):
 
 
 def load_hubs(person):
-    names = set()
-    return [load_hub(f, names) for f in person["hubs"]]
+    names, logins, hubs = set(), {}, []
+    for folder in person["hubs"]:
+        h = load_hub(folder, names)
+        login = h["owner"]["login"]
+        if login in logins:
+            raise ProvisionError(f"{logins[login]} and {h['path']} both name owner {login}; one hub per owner")
+        logins[login] = h["path"]
+        hubs.append(h)
+    return hubs
 
 
 def from_person(path=None):
@@ -309,6 +316,11 @@ def generate(person, hubs, shipped=None):
 
 def config_diff(want, have):
     """What differs between two board configs, as readable lines; empty when equal in content."""
+    if not isinstance(have, dict) or not isinstance(have.get("defaults", {}), dict) \
+            or not isinstance(have.get("boards", {}), dict) \
+            or not all(isinstance(b, dict) for b in have.get("boards", {}).values()):
+        return ["not a board config: it needs an object whose \"defaults\" and \"boards\" are objects, "
+                "with an object per board"]
     out = []
     wd, hd = want.get("defaults", {}), have.get("defaults", {}) if isinstance(have, dict) else {}
     for k in sorted(set(wd) | set(hd)):
@@ -407,7 +419,7 @@ def scaffold(owner, repo):
                           "`board handoff . <item> <agent> <text> --status-md STATUS.md`; mark a reply read with `board ack . <item>`.\n"
                           "- A pull request merges after another agent's approve verdict or the operator's approval.\n"
                           "- Write agent names in bold; an @-mention notifies the GitHub user of that name.\n")
-    files["STATUS.md"] = (f"# STATUS — {name}\n\n## What just happened\n\n- Repo created with the guide's layout.\n\n"
+    files["STATUS.md"] = (f"# STATUS — {name}\n\n## What just happened\n\n- Repo created with task-mgmt's repo layout.\n\n"
                           "## What's in progress\n\n(none)\n\n## What's next\n\n- File the first issues on the board.\n\n"
                           "## Where to find things\n\n- Layout → [README.md](README.md)\n- Conventions → [AGENTS.md](AGENTS.md)\n")
     files[".gitignore"] = "\n".join(ignore) + "\n"
@@ -505,7 +517,7 @@ class Run:
             g = self.gh.git
             g(["init", "-q", "-b", "main"], path)
             g(["add", "."], path)
-            g(["commit", "-q", "-m", "chore: repo layout from the architecture guide"], path)
+            g(["commit", "-q", "-m", "chore: repo layout from task-mgmt"], path)
             self.gh.run(["repo", "create", name, "--public" if r.get("public") else "--private",
                          "--description", r.get("description", ""), "--source", path, "--remote", "origin", "--push"])
             rid = self.gh.rest(f"repos/{name}")["node_id"]
@@ -548,7 +560,7 @@ class Run:
             if missing:
                 self.by_hand(f"{name}: add {missing[0]} in Settings > Secrets and variables > Actions; "
                              "until then the board workflow skips")
-            self.variables(name)
+            self.variables(name, typ == "organization")
             return
         if "var:BOARD_CONFIG" not in have:
             missing.append("variable BOARD_CONFIG (the board config JSON)")
@@ -556,10 +568,10 @@ class Run:
             self.by_hand(f"{name}: add {'; and '.join(missing)} in Settings > Secrets and variables > Actions; "
                          "until then the board workflow skips")
         if "var:BOARD_REF" not in have:
-            self.by_hand(f"{name}: set variable BOARD_REF to the full guide commit SHA to run the board command from; "
-                         "without it the board workflow runs the guide's main and warns")
+            self.by_hand(f"{name}: set variable BOARD_REF to the full task-mgmt commit SHA to run the board command from; "
+                         "without it the board workflow runs task-mgmt's main and warns")
 
-    def variables(self, name):
+    def variables(self, name, org=False):
         """From hubs: set the repo's BOARD_CONFIG and BOARD_REF to what they should be. A rehearsal
         compares the current values (BOARD_CONFIG as parsed JSON, BOARD_REF exactly); --live sets them."""
         want = {}
@@ -581,8 +593,17 @@ class Run:
         sha = self.release_sha((self.hub_of.get(owner) or {}).get("version"))
         if sha:
             want["BOARD_REF"] = sha
+        try:
+            current = {var: self.gh.rest(f"repos/{name}/actions/variables/{var}") for var in want}
+            shared = self.org_variables(name) if org and None in current.values() else {}
+        except ProvisionError:
+            self.by_hand(f"{name}: couldn't read its Actions variables with this token; check by hand that BOARD_CONFIG "
+                         "and BOARD_REF hold what the hubs give")
+            return
         for var, value in want.items():
-            cur = self.gh.rest(f"repos/{name}/actions/variables/{var}")
+            cur, level = current[var], "repo"
+            if cur is None and var in shared:
+                cur, level = shared[var], "organization"
             if cur is not None:
                 if var == "BOARD_CONFIG":
                     try:
@@ -592,7 +613,11 @@ class Run:
                 else:
                     same = cur.get("value") == value
                 if same:
-                    self.say("✓", f"{name}: variable {var}")
+                    self.say("✓", f"{name}: variable {var}" + (" (organization level)" if level == "organization" else ""))
+                    continue
+                if level == "organization":
+                    self.by_hand(f"{name}: the organization variable {var} it sees differs from what the hubs give: "
+                                 "update it at the organization, or set a repo-level one")
                     continue
             shown = f"boards {', '.join(value['boards'])}" if var == "BOARD_CONFIG" else value
             self.pending(f"variable {var} on {name} to {shown} ({'missing' if cur is None else 'differs'})",
@@ -600,6 +625,17 @@ class Run:
             if self.live:
                 body = json.dumps(value, indent=2) if var == "BOARD_CONFIG" else value
                 self.gh.run(["variable", "set", var, "--repo", name, "--body", body])
+
+    def org_variables(self, name):
+        """The organization variables a repo's Actions see, by name, with their values."""
+        out, page = {}, 1
+        while True:  # 100 is GitHub's page limit
+            d = self.gh.rest(f"repos/{name}/actions/organization-variables?per_page=100&page={page}") or {}
+            items = d.get("variables", [])
+            out.update({x["name"]: x for x in items})
+            if len(items) < 100:
+                return out
+            page += 1
 
     def release_sha(self, version):
         """The commit SHA BOARD_REF pins: the hub's version tag in the product repo, peeled to its
@@ -751,6 +787,18 @@ class Run:
 
     def write_config(self):
         if self.person is not None:  # from hubs, `provision.py config` writes the board config
+            for h in self.hubs:
+                for b in h["owner"].get("boards", []):
+                    found = self.entries.get(b["name"])
+                    if not found:
+                        continue
+                    e = board_entry(h["owner"], b)
+                    same = {"repos": lambda a, c: sorted(a) == sorted(c)}  # repo order doesn't matter; level order does
+                    drift = [x for x in ("hierarchy", "repos", "release")
+                             if not same.get(x, lambda a, c: a == c)(e[x], found[x])]
+                    if drift:
+                        self.by_hand(f"hub board {b['name']} differs from GitHub in {', '.join(drift)}: set "
+                                     + "; ".join(f"{x} = {json.dumps(found[x])}" for x in drift) + f" in {h['path']}")
             try:
                 want = generate(self.person, self.hubs)
             except ProvisionError:
@@ -836,9 +884,15 @@ def main(argv):
     try:
         if args:
             path, cfg = args[0], load(args[0])
-        else:
+        elif os.path.exists(person_path()):
             cfg = from_person()
             path = ", ".join(h["path"] for h in cfg["hubs"])
+        else:
+            path = os.path.join(HERE, "github.json")
+            if not os.path.exists(path):
+                raise ProvisionError(f"no config at {path}: copy github.example.json to github.json and edit it, "
+                                     f"or copy person.example.json to {person_path()} to read your hubs")
+            cfg = load(path)
         print(("Applying " if live else "Rehearsing ") + path)
         return Run(GH(), cfg, live).go()
     except ProvisionError as e:

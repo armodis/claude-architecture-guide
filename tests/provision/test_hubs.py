@@ -128,15 +128,42 @@ class Validation(Base):
         self.person()
         cfg = pv.from_person()
         self.assertEqual([o["login"] for o in cfg["owners"]], ["example-org", "example-user"])
-        with mock.patch.dict(os.environ, {"TASK_MGMT_PERSON": os.path.join(self.tmp, "absent.json")}):
+        with mock.patch.dict(os.environ, {"TASK_MGMT_PERSON": os.path.join(self.tmp, "absent.json")}), \
+                mock.patch.object(pv, "HERE", self.tmp):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(pv.main([]), 1)
-        self.assertIn("no person layer", err.getvalue())
+            self.assertIn("copy github.example.json to github.json and edit it, or copy person.example.json", err.getvalue())
+            with open(os.path.join(self.tmp, "github.json"), "w") as f:
+                json.dump({"owners": [pv.read_json(os.path.join(USER_HUB, ".task-mgmt", "config.json"))["owner"]]}, f)
+            seen = []
+            with mock.patch.object(pv, "Run", lambda gh, cfg, live: seen.append(cfg) or mock.Mock(go=lambda: 0)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pv.main([]), 0)
+            self.assertEqual([o["login"] for o in seen[0]["owners"]], ["example-user"], "without a person layer, github.json")
+
+    def test_two_hubs_for_one_owner_are_refused(self):
+        org = pv.read_json(os.path.join(ORG_HUB, ".task-mgmt", "config.json"))
+        org["owner"]["boards"] = []
+        self.person(hubs=[ORG_HUB, self.hub(org, "again")])
+        with self.assertRaisesRegex(pv.ProvisionError, "org-hub.*again.*both name owner example-org"):
+            pv.from_person()
+
+    def test_a_malformed_board_config_is_a_clear_difference(self):
+        self.person()
+        for bad in ({"defaults": None, "boards": {}}, {"boards": []}, {"boards": {"x": 1}}, [1]):
+            with open(self.out, "w") as f:
+                json.dump(bad, f)
+            code, log = self.config("--check", "--out", self.out)
+            self.assertEqual(code, 1)
+            self.assertIn("not a board config", log)
 
 
-def org_gh(numbers=(1, 2, 4), workflows=None):
-    boards = [{"id": f"P_{t}", "number": n, "title": t, "repos": [f"example-org/{r}"], "levels": [], "themes": []}
-              for t, r, n in zip(("Company", "Widget", "Archive"), ("ops", "widget", "archive"), numbers)]
+LEVELS = (["Objective", "Epic", "User Story"], ["Milestone", "Epic", "User Story"], ["Epic"])
+
+
+def org_gh(numbers=(1, 2, 4), workflows=None, levels=LEVELS):
+    boards = [{"id": f"P_{t}", "number": n, "title": t, "repos": [f"example-org/{r}"], "levels": lv, "themes": []}
+              for t, r, n, lv in zip(("Company", "Widget", "Archive"), ("ops", "widget", "archive"), numbers, levels)]
     repos = {"example-org/ops", "example-org/widget", "example-org/archive"}
     gh = FakeGH({"example-org": "Organization"}, repos=repos, boards={"example-org": boards},
                 labels={f"{r}:test-fixture" for r in repos}, workflows=workflows)
@@ -233,6 +260,30 @@ class Variables(Base):
         code, log = run(org_gh(), self.cfg, False, self.out)
         self.assertIn("differs from the hubs (board archive: missing; board company: missing; board widget: missing): "
                       "run ./provision.py config", log)
+
+    def test_hub_hierarchy_that_differs_from_github_is_reported(self):
+        code, log = run(org_gh(levels=(["Objective", "Epic", "User Story"], ["Epic"], ["Epic"])), self.cfg, False, self.out)
+        self.assertEqual(code, 2)
+        self.assertIn("hub board widget differs from GitHub in hierarchy: set hierarchy = [\"Epic\"] in "
+                      + os.path.join(ORG_HUB, ".task-mgmt", "config.json"), log)
+        self.assertNotIn("hub board company differs", log)
+
+    def test_organization_variables_count_and_are_never_overwritten(self):
+        gh = org_gh()
+        gh.org_vars = {"BOARD_REF": TAG_COMMIT, "BOARD_CONFIG": json.dumps(self.board_config("widget"))}
+        code, log = run(gh, self.cfg, True, self.out)
+        self.assertIn("✓ example-org/widget: variable BOARD_CONFIG (organization level)", log)
+        self.assertIn("✓ example-org/ops: variable BOARD_REF (organization level)", log)
+        self.assertIn("example-org/ops: the organization variable BOARD_CONFIG it sees differs", log)
+        self.assertFalse(any(w[:2] == ("gh", "variable") for w in gh.writes), "no repo copy over an organization value")
+
+    def test_unreadable_variables_are_a_step_by_hand(self):
+        gh = org_gh()
+        gh.vars_forbidden = True
+        code, log = run(gh, self.cfg, False, self.out)
+        self.assertEqual(code, 2)
+        self.assertIn("example-org/ops: couldn't read its Actions variables", log)
+        self.assertIn("example-org/archive: couldn't read its Actions variables", log, "and the run goes on")
 
     def test_github_json_input_keeps_presence_only_checks(self):
         org = pv.read_json(os.path.join(ORG_HUB, ".task-mgmt", "config.json"))["owner"]

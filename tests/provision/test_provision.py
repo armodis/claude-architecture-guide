@@ -83,6 +83,8 @@ class FakeGH:
         if parts[3] == "contents":  # the board workflow file
             return None if "workflow" in getattr(self, "absent", set()) else {}
         if parts[3] == "actions" and len(parts) == 6:  # one repo variable: repos/<owner>/<name>/actions/variables/<NAME>
+            if getattr(self, "vars_forbidden", False):
+                raise pv.ProvisionError(f"gh api {path}: HTTP 403")
             value = self.vars.get(f"{parts[1]}/{parts[2]}:{parts[5]}")
             return None if value is None else {"name": parts[5], "value": value}
         if parts[3] == "actions":  # secret and variable lists, repo and organization level
@@ -91,6 +93,8 @@ class FakeGH:
             kind = parts[4].split("?")[0]
             have = getattr(self, "actions", {"actions/secrets": ["BOARD_TOKEN"], "actions/variables": ["BOARD_CONFIG", "BOARD_REF"]})
             key = "secrets" if kind.endswith("secrets") else "variables"
+            if kind == "organization-variables" and getattr(self, "org_vars", None):  # with values, as GitHub lists them
+                return {key: [{"name": k, "value": v} for k, v in self.org_vars.items()]}
             return {key: [{"name": x} for x in have.get("actions/" + kind, [])]}
         _, owner, name, _, label = parts
         return {} if f"{owner}/{name}:{label}" in self.labels else None
