@@ -70,6 +70,11 @@ check_package() {
   [ "$n" -gt 0 ] || ko "template/$pkg has no files to link"
 }
 
+if [ -f "$SUBSTRATE/.task-mgmt-release" ]; then
+  section "Release"
+  while IFS= read -r l; do note "$l"; done < "$SUBSTRATE/.task-mgmt-release"
+fi
+
 # --- 1. Layer 0: universal config ---
 section "Layer 0 — universal ~/.claude"
 check_package claude-user
@@ -149,6 +154,18 @@ if [[ " ${STOW_PACKAGES[*]} " == *" board "* ]]; then
   else
     note "board-refresh.timer not enabled; snapshots still refresh on read once older than a day"
   fi
+fi
+
+# --- 5c. The claude-restore commands resolve on PATH ---
+if [[ " ${STOW_PACKAGES[*]} " == *" claude-restore "* ]]; then
+  section "claude-restore commands"
+  for c in claude-restore claude-provider; do
+    if command -v "$c" >/dev/null 2>&1; then
+      ok "$c on PATH ($(command -v "$c"))"
+    else
+      note "$c is installed in ~/.local/bin but not on PATH; add: export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+  done
 fi
 
 # --- 6. GitHub auth (optional, for the orchestration layer) ---

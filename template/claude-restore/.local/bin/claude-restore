@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# claude-restore — save/restore your working set of Claude Code sessions.
+#
+# WHY A SNAPSHOT IS NEEDED
+#   Claude Code registers each LIVE session in ~/.claude/sessions/<pid>.json with its
+#   name, sessionId and cwd — and removes the record when the process exits. So after a
+#   reboot that directory tells you nothing. A hard stop (a crash, a kill, WSL shutting
+#   down for an update) can leave a record behind, so --save counts a record as live
+#   only while its pid is running with the recorded start time (procStart). The transcripts under ~/.claude/projects/
+#   are durable, but they carry no session name, and the project-dir encoding of the cwd
+#   is lossy (a '-' may have been '/' or a literal '-').
+#
+#   So we snapshot the live registry to a durable file while sessions are running, and
+#   restore from that snapshot afterwards. Same pattern as tmux-continuum: save on a
+#   timer, restore on demand. INDEPENDENT of tmux-resurrect/continuum — it does not read
+#   or write their state.
+#
+# WINDOW ORDER
+#   When sessions are running inside tmux, --save also records each session's window
+#   index (matched by walking the pane's process tree to the claude pid). Restore then
+#   rebuilds them in that same left-to-right order, so your arrangement survives the
+#   reboot. Sessions with no recorded index fall back to most-recently-used first.
+#
+# USAGE
+#   claude-restore --save        # merge live registry into the snapshot (cron every 10m)
+#   claude-restore --list        # show what would be restored, in restore order
+#   claude-restore               # rebuild tmux windows + attach (saves first)
+#   claude-restore --dry-run     # print the tmux commands instead of running them
+#   claude-restore --days N      # only sessions seen in the last N days (default 30)
+#   claude-restore --bedrock     # rebuild every window on Amazon Bedrock
+#   claude-restore --anthropic   # rebuild every window on the Anthropic API
+#                                #   Your own key lives in
+#                                #   ~/.config/claude-provider/bedrock.env (mode 600);
+#                                #   `claude-provider key` saves it, and per-window
+#                                #   switching is `claude-provider`.
+#   claude-restore --restart     # save, tear the tmux session down, rebuild it
+#                                #   Use after a Claude Code update that needs a
+#                                #   restart: every window comes back on the new
+#                                #   binary, same names, same order.
+
+set -euo pipefail
+
+SNAPSHOT="${CLAUDE_SESSION_SNAPSHOT:-$HOME/.claude/session-snapshot.tsv}"
+TMUX_SESSION="${CLAUDE_RESTORE_SESSION:-claude}"
+DAYS=30
+MODE=restore
+ATTACH=1
+PROVIDER=
+BEDROCK_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/claude-provider/bedrock.env"
+
+# print the header comment block as help
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --save)    MODE=save ;;
+    --restart) MODE=restart ;;
+    --no-attach) ATTACH=0 ;;
+    --bedrock)   PROVIDER=bedrock ;;
+    --anthropic) PROVIDER=anthropic ;;
+    --list)    MODE=list ;;
+    --dry-run) MODE=dryrun ;;
+    --days)    DAYS="${2:?--days needs a number}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+command -v tmux >/dev/null || { echo "tmux is not installed" >&2; exit 1; }
+
+save_snapshot() {
+  python3 - "$SNAPSHOT" "$TMUX_SESSION" <<'PY'
+import json, glob, os, subprocess, sys, time
+
+snap_path = sys.argv[1]
+tmux_session = sys.argv[2] if len(sys.argv) > 2 else "claude"
+home = os.path.expanduser("~")
+
+# Current boot. A session may only be pruned if we SAW it live during this same
+# boot and it has since gone: that is a deliberate close. Rows carrying a
+# different (or absent) boot id predate this boot, so "not live" tells us
+# nothing about them and they are kept.
+try:
+    boot_id = open("/proc/sys/kernel/random/boot_id").read().strip()
+except Exception:
+    boot_id = ""
+
+# pane pid -> window index, straight from tmux (no pipe: the heredoc owns stdin)
+pane_win = {}
+try:
+    out = subprocess.run(
+        ["tmux", "list-panes", "-s", "-t", tmux_session,
+         "-F", "#{pane_pid}\t#{window_index}"],
+        capture_output=True, text=True, timeout=5).stdout
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0].isdigit():
+            pane_win[int(parts[0])] = parts[1]
+except Exception:
+    pass
+
+def ppid_of(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(") ", 1)[1].split()[1])
+    except Exception:
+        return None
+
+def record_is_live(o):
+    """A record names a running session only if its process still exists AND
+    started when the record says. Claude Code deletes its record on exit, but a
+    hard stop (WSL shutdown for an update, a kill, a crash) leaves it behind;
+    counting it as live would mark the session "seen this boot" and the next
+    save would prune it as deliberately closed. The start-time match also
+    rejects a new process that reused the old pid."""
+    try:
+        pid = int(o.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if not pid:
+        return True  # no pid to check: keep the old behaviour
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            start = f.read().rsplit(") ", 1)[1].split()[19]
+    except Exception:
+        return False
+    ps = o.get("procStart")
+    return ps in (None, "") or str(ps) == start
+
+def window_for(pid):
+    """Walk up the process tree until we hit a pane pid."""
+    seen, cur = 0, pid
+    while cur and cur > 1 and seen < 25:
+        if cur in pane_win:
+            return pane_win[cur]
+        cur = ppid_of(cur)
+        seen += 1
+    return ""
+
+rows = {}
+live_ids = set()
+# existing snapshot first; live records overwrite
+if os.path.exists(snap_path):
+    for line in open(snap_path):
+        p = line.rstrip("\n").split("\t")
+        if len(p) >= 4:
+            sid, name, cwd, updated = p[0], p[1], p[2], p[3]
+            order = p[4] if len(p) > 4 else ""
+            seen_boot = p[5] if len(p) > 5 else ""
+            rows[sid] = (name, cwd, float(updated or 0), order, seen_boot)
+
+for fp in glob.glob(os.path.join(home, ".claude/sessions/*.json")):
+    try:
+        o = json.load(open(fp))
+    except Exception:
+        continue
+    sid, cwd = o.get("sessionId") or "", o.get("cwd") or ""
+    if not sid or not cwd:
+        continue
+    if not record_is_live(o):
+        continue  # stale record from a hard stop; the snapshot row stands
+    updated = float(o.get("updatedAt") or 0) or time.time() * 1000
+    name = o.get("name") or sid[:8]
+    order = window_for(o.get("pid") or 0)
+    prev = rows.get(sid)
+    # keep a previously-recorded order if this session isn't currently in tmux
+    if not order and prev:
+        order = prev[3]
+    if prev is None or updated >= prev[2]:
+        rows[sid] = (name, cwd, updated, order, boot_id)
+    else:
+        rows[sid] = (prev[0], prev[1], prev[2], prev[3], boot_id)
+    live_ids.add(sid)
+
+# Drop sessions that were deliberately closed.
+#
+# "Not currently live" cannot by itself mean "remove" — after a reboot EVERY
+# session is dead and the snapshot is the only record. The distinguishing
+# signal is whether we ever observed this session live during the CURRENT
+# boot. If we did and it is gone now, it was closed on purpose. If its row
+# carries an older boot id (or none), it predates this boot and is kept.
+#
+# An earlier version gated on "is anything live at all", which broke as soon
+# as you started a single session after a reboot: that made live_ids
+# non-empty and deleted every other row.
+# Both guards are needed. The boot id alone would prune everything if you
+# closed every window and then saved (each row: seen live this boot, gone
+# now). Requiring something to still be live means "nothing is running"
+# is never read as "you closed them all deliberately" — the same reason a
+# reboot is safe.
+if live_ids:
+    for sid in [s for s in rows if s not in live_ids and rows[s][4] and rows[s][4] == boot_id]:
+        del rows[sid]
+
+os.makedirs(os.path.dirname(snap_path), exist_ok=True)
+tmp = snap_path + ".tmp"
+with open(tmp, "w") as f:
+    for sid, (name, cwd, updated, order, seen_boot) in rows.items():
+        f.write(f"{sid}\t{name}\t{cwd}\t{updated:.0f}\t{order}\t{seen_boot}\n")
+os.replace(tmp, snap_path)
+print(len(rows))
+PY
+}
+
+# name<TAB>sessionId<TAB>cwd in restore order.
+restorable() {
+  python3 - "$SNAPSHOT" "$DAYS" <<'PY'
+import glob, os, sys, time
+
+snap_path, days = sys.argv[1], float(sys.argv[2])
+home = os.path.expanduser("~")
+cutoff = (time.time() - days * 86400) * 1000
+
+if not os.path.exists(snap_path):
+    sys.exit(0)
+
+def has_transcript(sid):
+    return bool(glob.glob(os.path.join(home, ".claude/projects/*", sid + ".jsonl")))
+
+out = []
+for line in open(snap_path):
+    p = line.rstrip("\n").split("\t")
+    if len(p) < 4:
+        continue
+    sid, name, cwd, updated = p[0], p[1], p[2], p[3]
+    order = p[4] if len(p) > 4 else ""
+    if float(updated or 0) < cutoff:
+        continue
+    if not os.path.isdir(cwd) or not has_transcript(sid):
+        continue
+    # recorded window index first (ascending), then unordered by most-recent
+    key = (0, int(order), 0.0) if order.isdigit() else (1, 0, -float(updated or 0))
+    out.append((key, name, sid, cwd))
+
+for _, name, sid, cwd in sorted(out, key=lambda r: r[0]):
+    print(f"{name}\t{sid}\t{cwd}")
+PY
+}
+
+count=$(save_snapshot)
+if [ "$MODE" = save ]; then
+  echo "Snapshot updated: $count session(s) -> ${SNAPSHOT/#$HOME/\~}"
+  exit 0
+fi
+
+mapfile -t ROWS < <(restorable)
+
+if [ "${#ROWS[@]}" -eq 0 ]; then
+  echo "Nothing restorable in the last $DAYS days." >&2
+  echo "Snapshot: ${SNAPSHOT/#$HOME/\~} ($count record(s)). Try --days 90." >&2
+  exit 1
+fi
+
+if [ "$MODE" = list ]; then
+  printf '%-4s %-20s %-10s %s\n' POS NAME ID CWD
+  i=1
+  for row in "${ROWS[@]}"; do
+    IFS=$'\t' read -r name sid cwd <<<"$row"
+    printf '%-4s %-20s %-10s %s\n' "$i" "$name" "${sid:0:8}" "${cwd/#$HOME/\~}"
+    i=$((i+1))
+  done
+  exit 0
+fi
+
+if [ "$MODE" = restart ]; then
+  if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    echo "No '$TMUX_SESSION' session to restart; run plain 'cr' instead." >&2; exit 1
+  fi
+  # The rebuild cannot run here: this script lives in a pane of the session it is
+  # about to kill. Detach a helper that waits for the session to die, then
+  # rebuilds it headless. The operator reattaches afterwards.
+  setsid nohup sh -c '
+    while tmux has-session -t "'"$TMUX_SESSION"'" 2>/dev/null; do sleep 1; done
+    exec "'"$0"'" --no-attach '"${PROVIDER:+--$PROVIDER}"'
+  ' >/dev/null 2>&1 &
+  echo "Snapshot saved ($count session(s)). Tearing down and rebuilding..."
+  echo "Reattach with:  tmux attach -t $TMUX_SESSION"
+  sleep 1
+  exec tmux kill-session -t "$TMUX_SESSION"
+fi
+
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo "tmux session '$TMUX_SESSION' already exists — attaching."
+  [ "$MODE" = dryrun ] || exec tmux attach -t "$TMUX_SESSION"
+  exit 0
+fi
+
+run() { if [ "$MODE" = dryrun ]; then printf 'tmux %s\n' "$*"; else tmux "$@"; fi; }
+
+if [ "$PROVIDER" = bedrock ] && ! grep -q '^AWS_BEARER_TOKEN_BEDROCK=.' "$BEDROCK_ENV" 2>/dev/null; then
+  echo "No Bedrock key saved yet." >&2
+  if [ "$MODE" != dryrun ] && [ -t 0 ] && command -v claude-provider >/dev/null; then
+    claude-provider key || exit 1
+  else
+    echo "Save one with: claude-provider key" >&2; exit 1
+  fi
+fi
+
+first=1
+for row in "${ROWS[@]}"; do
+  IFS=$'\t' read -r name sid cwd <<<"$row"
+  wname="${name//[:.]/-}"
+  case "$PROVIDER" in
+    bedrock)
+      # Source the token rather than inlining it: keeps it out of ps and history.
+      cmd="bash -lc $(printf '%q' "set -a; . $(printf '%q' "$BEDROCK_ENV"); set +a; exec claude -r $sid")" ;;
+    anthropic)
+      cmd="bash -lc $(printf '%q' "unset CLAUDE_CODE_USE_BEDROCK AWS_BEARER_TOKEN_BEDROCK AWS_REGION; exec claude -r $sid")" ;;
+    *)
+      cmd="claude -r $sid" ;;
+  esac
+  if [ "$first" = 1 ]; then
+    run new-session -d -s "$TMUX_SESSION" -n "$wname" -c "$cwd" "$cmd"
+    first=0
+  else
+    run new-window -t "$TMUX_SESSION" -n "$wname" -c "$cwd" "$cmd"
+  fi
+done
+
+run select-window -t "$TMUX_SESSION:^"   # first window, whatever base-index is
+echo "Restored ${#ROWS[@]} session(s) into tmux session '$TMUX_SESSION'."
+[ "$MODE" = dryrun ] || [ "$ATTACH" = 0 ] || exec tmux attach -t "$TMUX_SESSION"

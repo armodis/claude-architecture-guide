@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+# claude-provider — switch running Claude Code sessions between the Anthropic API
+# and Amazon Bedrock.
+#
+# WHY A RESTART IS NEEDED
+#   The provider is chosen from the environment when `claude` starts
+#   (CLAUDE_CODE_USE_BEDROCK + AWS_*). A running session cannot be moved, so
+#   switching means respawning the process. The session itself is preserved:
+#   each window is rebuilt with `claude -r <sessionId>`, same id, same window,
+#   same name — only the backing process changes.
+#
+# CREDENTIALS
+#   Each person uses their own Bedrock API key. `claude-provider key` prompts
+#   for it (input hidden) and writes ~/.config/claude-provider/bedrock.env
+#   (mode 600). The respawned shell SOURCES that file; the key is never passed
+#   on a command line, so it stays out of `ps` output and shell history.
+#
+# USAGE
+#   claude-provider key                    # save your own Bedrock key + region
+#   claude-provider key --check            # test the saved key against Bedrock
+#   claude-provider status                 # what each window is running on
+#   claude-provider bedrock                # current window
+#   claude-provider anthropic 5 7 pm-eng   # by window index or name
+#   claude-provider bedrock --all          # every claude window
+#   claude-provider anthropic --all --model fable
+#                                          # also switch model; respawns even
+#                                          # windows already on that backend
+#   claude-provider bedrock --all --force  # respawn even if already on Bedrock,
+#                                          # e.g. to pick up a new key
+#
+#   The window running this command is always skipped: respawning it would
+#   kill the command mid-run. Use /model inside that window instead.
+set -euo pipefail
+
+TMUX_SESSION="${CLAUDE_RESTORE_SESSION:-claude}"
+ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-provider"
+BEDROCK_ENV="$ENV_DIR/bedrock.env"
+
+# print the header comment block as help
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
+
+MODE=""; ALL=0; TARGETS=(); MODEL=""; CHECK=0; FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    status|bedrock|anthropic|key) MODE="$1" ;;
+    --all|-a) ALL=1 ;;
+    --check) CHECK=1 ;;
+    --force|-f) FORCE=1 ;;
+    --model|-m) MODEL="${2:?--model needs a name}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) TARGETS+=("$1") ;;
+  esac
+  shift
+done
+[ -n "$MODE" ] || { usage; exit 2; }
+
+# value of VAR in bedrock.env, without surrounding quotes (parsed, not sourced)
+env_value() {
+  sed -n "s/^$1=//p" "$BEDROCK_ENV" 2>/dev/null | tail -n 1 \
+    | sed -e "s/^[\"']//" -e "s/[\"']\$//"
+}
+
+# One read-only Bedrock call (ListFoundationModels) with the saved key.
+check_key() {
+  local token region code
+  token="$(env_value AWS_BEARER_TOKEN_BEDROCK)"
+  region="$(env_value AWS_REGION)"; region="${region:-us-east-1}"
+  [ -n "$token" ] || { echo "No key saved in $BEDROCK_ENV. Run: claude-provider key" >&2; return 1; }
+  command -v curl >/dev/null || { echo "curl is not installed; cannot check the key." >&2; return 1; }
+  # The header comes from a process substitution so the key never appears in argv.
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+    "https://bedrock.$region.amazonaws.com/foundation-models?byProvider=Anthropic")" || code="${code:-000}"
+  case "$code" in
+    200) echo "Key works ($region)." ;;
+    401|403) echo "Bedrock rejected the key (HTTP $code): revoked, expired, or missing permissions." >&2
+             echo "Save a new one with: claude-provider key" >&2; return 1 ;;
+    *) echo "Could not verify the key (HTTP $code from $region)." >&2; return 1 ;;
+  esac
+}
+
+# Prompt for this person's own key and region; write bedrock.env with mode 600.
+# Other lines already in the file (e.g. model pins) are kept.
+save_key() {
+  [ -t 0 ] || { echo "claude-provider key needs an interactive terminal." >&2; return 1; }
+  local token region old_region tmp
+  old_region="$(env_value AWS_REGION)"
+  printf 'Paste your own Amazon Bedrock API key (input hidden): '
+  IFS= read -rs token; echo
+  token="${token//[[:space:]]/}"
+  [ -n "$token" ] || { echo "No key entered; nothing changed." >&2; return 1; }
+  read -rp "AWS region [${old_region:-us-east-1}]: " region
+  region="${region:-${old_region:-us-east-1}}"
+  mkdir -p "$ENV_DIR"; chmod 700 "$ENV_DIR"
+  tmp="$(umask 077; mktemp "$ENV_DIR/.bedrock.env.XXXXXX")"
+  {
+    printf 'CLAUDE_CODE_USE_BEDROCK=1\nAWS_REGION=%s\nAWS_BEARER_TOKEN_BEDROCK=%s\n' "$region" "$token"
+    [ -f "$BEDROCK_ENV" ] && grep -vE '^(CLAUDE_CODE_USE_BEDROCK|AWS_REGION|AWS_BEARER_TOKEN_BEDROCK)=' "$BEDROCK_ENV" || true
+  } >"$tmp"
+  mv "$tmp" "$BEDROCK_ENV"
+  echo "Saved to ${BEDROCK_ENV/#$HOME/\~} (mode 600)."
+  check_key || true
+  echo "Windows already on Bedrock keep the old key until respawned: claude-provider bedrock --all --force"
+}
+
+if [ "$MODE" = key ]; then
+  if [ "$CHECK" = 1 ]; then check_key; else save_key; fi
+  exit
+fi
+
+command -v tmux >/dev/null || { echo "tmux is not installed" >&2; exit 1; }
+tmux has-session -t "$TMUX_SESSION" 2>/dev/null || {
+  echo "No '$TMUX_SESSION' tmux session." >&2; exit 1; }
+
+# window_index<TAB>window_name<TAB>claude_pid<TAB>sessionId<TAB>provider
+inventory() {
+  python3 - "$TMUX_SESSION" <<'PY'
+import json, glob, os, subprocess, sys
+sess = sys.argv[1]
+panes = subprocess.run(["tmux","list-panes","-s","-t",sess,
+        "-F","#{window_index}\t#{window_name}\t#{pane_pid}"],
+        capture_output=True, text=True).stdout
+
+def started_as_recorded(pid, proc_start):
+    # A record left by a hard stop names a dead pid, which a new process may
+    # reuse; trust it only if that pid started when the record says.
+    try: start = open(f"/proc/{pid}/stat").read().rsplit(") ",1)[1].split()[19]
+    except Exception: return False
+    return proc_start in (None, "") or str(proc_start) == start
+
+live = {}
+for f in glob.glob(os.path.expanduser("~/.claude/sessions/*.json")):
+    try: o = json.load(open(f))
+    except Exception: continue
+    if o.get("pid") and o.get("sessionId") and started_as_recorded(int(o["pid"]), o.get("procStart")):
+        live[int(o["pid"])] = o["sessionId"]
+
+def ppid(p):
+    try: return int(open(f"/proc/{p}/stat").read().rsplit(") ",1)[1].split()[1])
+    except Exception: return None
+
+def provider(pid):
+    try:
+        env = open(f"/proc/{pid}/environ","rb").read().split(b"\0")
+    except Exception:
+        return "?"
+    for e in env:
+        if e.startswith(b"CLAUDE_CODE_USE_BEDROCK=") and e.split(b"=",1)[1] not in (b"",b"0"):
+            return "bedrock"
+    return "anthropic"
+
+for line in panes.splitlines():
+    idx, name, pp = line.split("\t")
+    found = None
+    for cpid, sid in live.items():
+        c = cpid
+        for _ in range(12):
+            if c == int(pp): found = (cpid, sid); break
+            c = ppid(c)
+            if not c or c <= 1: break
+        if found: break
+    if found:
+        print(f"{idx}\t{name}\t{found[0]}\t{found[1]}\t{provider(found[0])}")
+    else:
+        print(f"{idx}\t{name}\t-\t-\t-")
+PY
+}
+
+INV="$(inventory)"
+
+if [ "$MODE" = status ]; then
+  printf '%-4s %-18s %-10s %s\n' WIN NAME PROVIDER SESSION
+  while IFS=$'\t' read -r idx name pid sid prov; do
+    [ -n "$idx" ] || continue
+    printf '%-4s %-18s %-10s %s\n' "$idx" "$name" "$prov" "${sid:0:8}"
+  done <<<"$INV"
+  exit 0
+fi
+
+if [ "$MODE" = bedrock ] && [ -z "$(env_value AWS_BEARER_TOKEN_BEDROCK)" ]; then
+  echo "No Bedrock key saved yet."
+  save_key || exit 1
+fi
+
+selected() {
+  while IFS=$'\t' read -r idx name pid sid prov; do
+    [ -n "${idx:-}" ] && [ "$sid" != "-" ] || continue
+    if [ "$ALL" = 1 ]; then printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$name" "$sid" "$prov" "$pid"; continue; fi
+    if [ "${#TARGETS[@]}" -eq 0 ]; then
+      [ "$idx" = "$(tmux display-message -p -t "$TMUX_SESSION" '#{window_index}')" ] \
+        && printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$name" "$sid" "$prov" "$pid"
+      continue
+    fi
+    for t in "${TARGETS[@]}"; do
+      if [ "$t" = "$idx" ] || [ "$t" = "$name" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$name" "$sid" "$prov" "$pid"; break
+      fi
+    done
+  done <<<"$INV"
+}
+
+SEL="$(selected)"
+[ -n "$SEL" ] || { echo "No matching claude windows." >&2; exit 1; }
+
+# true when $1 is an ancestor of this script, i.e. we run inside that session
+is_ancestor() {
+  local c=$$
+  for _ in $(seq 1 30); do
+    [ "$c" = "$1" ] && return 0
+    # ppid is the 2nd field after the last ") " — comm may contain spaces
+    c=$(sed 's/.*) //' /proc/$c/stat 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$c" ] && [ "$c" -gt 1 ] || return 1
+  done
+  return 1
+}
+MODEL_ARG=""
+[ -n "$MODEL" ] && MODEL_ARG=" --model $(printf '%q' "$MODEL")"
+TARGET="$MODE${MODEL:+ / $MODEL}"
+
+n=0
+while IFS=$'\t' read -r idx name sid prov pid; do
+  [ -n "${idx:-}" ] || continue
+  if is_ancestor "$pid"; then
+    printf '  %-18s skipped — this command runs inside it (use /model there)\n' "$name"; continue
+  fi
+  if [ "$prov" = "$MODE" ] && [ -z "$MODEL" ] && [ "$FORCE" = 0 ]; then
+    printf '  %-18s already on %s — skipped\n' "$name" "$MODE"; continue
+  fi
+  if [ "$MODE" = bedrock ]; then
+    cmd="set -a; . $(printf '%q' "$BEDROCK_ENV"); set +a; exec claude -r $(printf '%q' "$sid")$MODEL_ARG"
+  else
+    cmd="unset CLAUDE_CODE_USE_BEDROCK AWS_BEARER_TOKEN_BEDROCK AWS_REGION; exec claude -r $(printf '%q' "$sid")$MODEL_ARG"
+  fi
+  tmux respawn-window -k -t "$TMUX_SESSION:$idx" "bash -lc $(printf '%q' "$cmd")"
+  tmux rename-window -t "$TMUX_SESSION:$idx" "$name"
+  printf '  %-18s %s -> %s\n' "$name" "$prov" "$TARGET"
+  n=$((n+1))
+done <<<"$SEL"
+echo "Switched $n session(s) to $TARGET."
