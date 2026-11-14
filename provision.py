@@ -498,8 +498,9 @@ class Run:
                 self.say("✓", f"repo {name}")
         else:
             path = os.path.expanduser(r.get("path") or os.path.join("~", owner, r["name"]))
-            if os.path.exists(path) and (not os.path.isdir(path) or os.listdir(path)):
-                raise ProvisionError(f"{path} exists and isn't an empty folder; set \"path\" for {name}")
+            # a hub repo's folder already holds its own config, which is committed with the layout
+            if os.path.exists(path) and (not os.path.isdir(path) or set(os.listdir(path)) - {".task-mgmt"}):
+                raise ProvisionError(f"{path} exists and holds more than a .task-mgmt/ folder; set \"path\" for {name}")
             if not self.gh.git_identity():
                 raise ProvisionError("git has no user.email; set user.name and user.email before creating repos")
             scopes = self.gh.scopes()

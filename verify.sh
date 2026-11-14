@@ -176,16 +176,22 @@ else
   note "gh not authenticated (only needed for the GitHub-as-substrate workflow)"
 fi
 
-# --- 7. GitHub matches github.json (when there is one) ---
-if [ -f "$SUBSTRATE/github.json" ]; then
+# --- 7. GitHub matches the hubs (or github.json), and the board config is generated from them ---
+person="${TASK_MGMT_PERSON:-${XDG_CONFIG_HOME:-$HOME/.config}/task-mgmt/person.json}"
+if [ -f "$person" ]; then src="the hubs"; args=(); elif [ -f "$SUBSTRATE/github.json" ]; then src="github.json"; args=("$SUBSTRATE/github.json"); else src=""; fi
+if [ -n "$src" ]; then
   section "GitHub (provision.py rehearsal)"
+  if [ "$src" = "the hubs" ]; then
+    if out=$(python3 "$SUBSTRATE/provision.py" config --check 2>&1); then ok "board config matches the hubs"
+    else ko "board config differs from the hubs: $(printf '%s' "$out" | tail -1) (run provision.py config)"; fi
+  fi
   if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
-    ko "github.json exists but gh is not logged in"
+    ko "$src to check, but gh is not logged in"
   else
-    out=$(python3 "$SUBSTRATE/provision.py" "$SUBSTRATE/github.json" 2>&1); rc=$?
+    out=$(python3 "$SUBSTRATE/provision.py" ${args[@]+"${args[@]}"} 2>&1); rc=$?
     case $rc in
-      0) ok "organizations, repos, boards and board config match github.json" ;;
-      2) ko "GitHub doesn't match github.json yet:"; printf '%s\n' "$out" | grep -E '^  [·!] ' ;;
+      0) ok "organizations, repos, boards and board config match $src" ;;
+      2) ko "GitHub doesn't match $src yet:"; printf '%s\n' "$out" | grep -E '^  [·!] ' ;;
       *) ko "provision.py failed: $(printf '%s' "$out" | tail -1)" ;;
     esac
   fi

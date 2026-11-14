@@ -13,12 +13,10 @@
       {"name": "company", "title": "Strategic Portfolio", "repos": ["ops"],
        "template": {"owner": "armodis-ai", "number": 6},
        "themes": ["Strategy", "Product", "Engineering", "Operations", "Go to market", "Finance", "Legal and compliance", "People"],
-       "number": 1,
        "hierarchy": ["Objective", "Key Result", "Initiative", "Milestone", "Epic", "User Story"],
        "org_label": "Your Org"},
       {"name": "your-product", "title": "Your Product", "repos": ["your-product"],
        "template": {"owner": "armodis-ai", "number": 9},
-       "number": 2,
        "hierarchy": ["Milestone", "Epic", "User Story"]}
     ]
   }
