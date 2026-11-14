@@ -188,7 +188,7 @@ if [ -n "$src" ]; then
   if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
     ko "$src to check, but gh is not logged in"
   else
-    out=$(python3 "$SUBSTRATE/provision.py" "${args[@]}" 2>&1); rc=$?
+    out=$(python3 "$SUBSTRATE/provision.py" ${args[@]+"${args[@]}"} 2>&1); rc=$?
     case $rc in
       0) ok "organizations, repos, boards and board config match $src" ;;
       2) ko "GitHub doesn't match $src yet:"; printf '%s\n' "$out" | grep -E '^  [·!] ' ;;

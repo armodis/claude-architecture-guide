@@ -215,6 +215,23 @@ class Runs(unittest.TestCase):
         self.assertEqual(cfg["boards"]["widget"]["owner_type"], "organization")
         self.assertIn("statuses", cfg["defaults"])
 
+    def test_a_hub_folder_holding_only_its_config_can_become_the_repo(self):
+        org = dict(ORG, repos=[dict(r, path=os.path.join(self.home, r["name"])) for r in ORG["repos"]])
+        hub = os.path.join(self.home, "ops", ".task-mgmt")
+        os.makedirs(hub)
+        with open(os.path.join(hub, "config.json"), "w") as f:
+            f.write("{}")
+        gh = FakeGH({"acme-co": "Organization"})
+        code, log = run(gh, {"owners": [org]}, True, self.cfgpath)
+        self.assertEqual(code, 0, log)
+        self.assertTrue(os.path.exists(os.path.join(self.home, "ops", "STATUS.md")))
+        self.assertTrue(os.path.exists(os.path.join(hub, "config.json")), "the hub config stays")
+        with open(os.path.join(self.home, "widget-notes.txt"), "w"):
+            pass
+        stray = dict(ORG, repos=[dict(ORG["repos"][0], path=self.home)])
+        with self.assertRaisesRegex(pv.ProvisionError, "holds more than a .task-mgmt/ folder"):
+            run(FakeGH({"acme-co": "Organization"}), {"owners": [stray]}, False, self.cfgpath)
+
     def test_rerun_on_a_complete_setup_changes_nothing(self):
         board = {"id": "P_w", "number": 3, "title": "Widget", "repos": ["acme-co/widget"],
                  "levels": ["Epic"], "themes": ["Data", "App"]}

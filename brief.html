@@ -438,7 +438,7 @@
         <ul class="repo-list" style="gap:0.55rem">
           <li><span class="r">hub</span><span class="d"><span class="path">&lt;owner&gt;/ops/.task-mgmt/config.json</span> — that owner's repos and boards: numbers, templates, hierarchy, which repos run the board workflow</span></li>
           <li><span class="r">person</span><span class="d"><span class="path">~/.config/task-mgmt/person.json</span> — who operates, which agents work, which hubs to read</span></li>
-          <li><span class="r">release</span><span class="d">shipped defaults, installed from a pinned tag; board workflows pin the same commit</span></li>
+          <li><span class="r">release</span><span class="d">shipped defaults, from the task-mgmt release you run (a pinned tag or a checkout); board workflows pin a release commit</span></li>
           <li><span class="r">generated</span><span class="d"><span class="path">~/.config/board/boards.json</span> — <code>provision.py config</code> merges the three</span></li>
         </ul>
       </div>
@@ -454,9 +454,11 @@ cd task-mgmt
 $EDITOR substrate.conf  <span class="cmt"># set DOMAINS=(work personal ...)</span>
 ./setup.sh              <span class="cmt"># stow + symlink (backs up real files first)</span>
 <span class="cmt"># a hub config per owner, and your person layer</span>
+mkdir -p ~/work/your-org/ops/.task-mgmt ~/.config/task-mgmt
 cp hub.example.json ~/work/your-org/ops/.task-mgmt/config.json
 cp person.example.json ~/.config/task-mgmt/person.json
-./provision.py --live   <span class="cmt"># repos, boards, workflow variables</span>
+./provision.py --live   <span class="cmt"># repos and boards; add the board numbers it reports</span>
+./provision.py --live   <span class="cmt"># then the workflow variables</span>
 ./provision.py config   <span class="cmt"># generate the board config</span>
 ./verify.sh             <span class="cmt"># confirm the wiring</span></code></pre>
       <p class="prose" style="font-size:0.85rem; margin-top:0.8rem">The repo ships a <code>template/</code> scaffold (universal Layer 0 + example <code>work</code>/<code>personal</code> domain roots + shell/git dotfiles). Copy it into your own dotfiles repo, or run in place.</p>

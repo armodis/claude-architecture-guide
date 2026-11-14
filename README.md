@@ -37,12 +37,15 @@ git clone https://github.com/armodis-ai/task-mgmt
 cd task-mgmt
 $EDITOR substrate.conf          # your domains: DOMAINS=(work personal ...)
 ./setup.sh                      # stow + symlink into ~/: instructions, design loop, board command and skills
-# one hub repo per owner (an organization or your user account), e.g. ~/work/your-org/ops
+# one hub per owner (an organization or your user account): its ops repo holds the owner's config
 mkdir -p ~/work/your-org/ops/.task-mgmt && cp hub.example.json ~/work/your-org/ops/.task-mgmt/config.json
 mkdir -p ~/.config/task-mgmt && cp person.example.json ~/.config/task-mgmt/person.json
-$EDITOR ~/work/your-org/ops/.task-mgmt/config.json ~/.config/task-mgmt/person.json
+$EDITOR ~/work/your-org/ops/.task-mgmt/config.json   # your owner, repos and boards
+$EDITOR ~/.config/task-mgmt/person.json              # you, your agents, and only the hubs you've created
 ./provision.py                  # rehearse: what exists, what would be created
-./provision.py --live           # create the repos and boards, and set each repo's workflow variables
+./provision.py --live           # create the repos (the hub folder becomes the ops repo) and the boards
+$EDITOR ~/work/your-org/ops/.task-mgmt/config.json   # add each new board's "number", as the report says
+./provision.py --live           # now set each repo's workflow variables
 ./provision.py config           # write ~/.config/board/boards.json from the hubs
 ./verify.sh                     # confirm the wiring, and that GitHub matches the hubs
 ```
@@ -98,13 +101,13 @@ The board is the shared-state plane for the [multi-agent workflow](#part-3-multi
 For each owner in the hubs, `provision.py`:
 
 1. **Checks the organization exists.** GitHub has no API to create one, so the report links the page where you create it ([github.com/account/organizations/new](https://github.com/account/organizations/new)); run it again afterwards.
-2. **Creates each missing repo**, private unless `"public": true`, and pushes the [File Conventions](#file-conventions) layout from a local clone at the repo's `path` (default `~/<owner>/<repo>`; the folder must be empty): README, AGENTS.md, STATUS.md, `design/`, `docs/decisions/` and `.gitignore`, the board workflow, plus `backend/`, `frontend/`, `scripts/` and `.env.example` for `"kind": "product"`. It adds the `test-fixture` label.
-3. **Copies each missing board** from its template, links the board's repos, adds its Themes (keeping existing options and their ids), and adds the Agent and Responder fields with your agents. A new board's `number` goes into the hub config once the report names it.
+2. **Creates each missing repo**, private unless `"public": true`, and pushes the [File Conventions](#file-conventions) layout from a local clone at the repo's `path` (default `~/<owner>/<repo>`; the folder must be empty, or hold only the hub's `.task-mgmt/`, which is committed with the layout): README, AGENTS.md, STATUS.md, `design/`, `docs/decisions/` and `.gitignore`, the board workflow, plus `backend/`, `frontend/`, `scripts/` and `.env.example` for `"kind": "product"`. It adds the `test-fixture` label.
+3. **Copies each missing board** from its template, links the board's repos, adds its Themes (keeping existing options and their ids), and adds the Agent and Responder fields with your agents. A new board has no `number` in the hub yet: the report names it, you add it (and commit the hub), and the next run sets the variables that depend on it. `provision.py config` refuses a hub board without one.
 4. **Checks the built-in workflows.** GitHub has no API to enable them, and a copy doesn't carry "Auto-add to project", so the report lists what's off with a link to that board's Workflows page. Set them as in step 4 of the checklist below, then run it again.
 5. **Sets each repo's board automation variables:** `BOARD_CONFIG` (the defaults plus the boards that list the repo) and `BOARD_REF` (the commit SHA of the hub's `version` tag), compared in a rehearsal, set and read back with `--live`, and left alone where they're set at organization level. It checks for a token (a GitHub App's `BOARD_APP_ID` variable and `BOARD_APP_KEY` secret, or a `BOARD_TOKEN` secret) and reports one that's missing; the token is yours to create and add. Without a token the workflow says so and skips, which matters only for issues that several pull requests close and for repos that release by tag; a repo that needs neither is marked `"automation": false` and isn't checked.
 6. **Checks the `board` config** matches what `provision.py config` would write.
 
-It finds what exists by name, creates only what's missing, and exits 0 once everything matches the hubs, or 2 while steps remain. Read-only boards (`"read_only": true`, for an owner whose board no repo feeds yet) get no workflow or field checks.
+It finds what exists by name, creates only what's missing, and exits 0 once everything matches the hubs, or 2 while steps remain. Read-only boards (`"read_only": true`, for an owner whose board no repo feeds yet) get no built-in workflow checks and no Agent or Responder fields.
 
 **The test fixture.** `board`'s live test runs against standing `test-fixture` issues: one Epic, one User Story under it and at least two Tasks. Keep them in a `sandbox` repo with its own Sandbox board for each owner type you use (one organization, one user account), so the real boards and hub issue lists stay clean: list the repo (`"automation": false`) and the board in that owner's hub, and provision creates both.
 

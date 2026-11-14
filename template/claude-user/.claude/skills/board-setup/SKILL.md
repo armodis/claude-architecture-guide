@@ -25,7 +25,7 @@ Add the board to the owner's hub config (`<hub>/.task-mgmt/config.json`, under `
 - `statuses` (in `boards.json` only), only to rename one (for example `{"done": "Shipped"}`); the rest keep their defaults.
 - `read_only: true` for a board agents may only read.
 
-Delete any example boards you don't use: `apply` and `claim` read back every configured board, and a placeholder makes them fail. Then `board fields <board>` and `board snapshot <board>` to confirm the command can read it.
+In a hand-kept `boards.json`, delete any example boards you don't use: `apply` and `claim` read back every configured board, and a placeholder makes them fail. Then `board fields <board>` and `board snapshot <board>` to confirm the command can read it.
 
 ## 3. Fields
 
