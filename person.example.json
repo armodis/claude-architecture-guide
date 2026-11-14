@@ -1,0 +1,6 @@
+{
+  "operator": {"name": "YourName", "login": "your-user"},
+  "agents": ["claude", "codex"],
+  "hubs": ["~/work/your-org/ops", "~/personal/ops"],
+  "defaults": {}
+}

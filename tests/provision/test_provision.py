@@ -21,6 +21,8 @@ class FakeGH:
         self.labels = set(labels)                 # "owner/name:label"
         self.workflows = workflows if workflows is not None else WF_ON
         self.writes = []
+        self.vars = {}                            # "owner/name:VAR" -> value, the repo's Actions variables
+        self.tags = {}                            # tag -> `git ls-remote` output for it
 
     def graphql(self, q, **v):
         if "repositoryOwner" in q and "projectsV2" in q:
@@ -80,6 +82,9 @@ class FakeGH:
             return {"node_id": f"R_{full}", "size": 1, "pushed_at": "2026-01-01"} if full in self.repos else None
         if parts[3] == "contents":  # the board workflow file
             return None if "workflow" in getattr(self, "absent", set()) else {}
+        if parts[3] == "actions" and len(parts) == 6:  # one repo variable: repos/<owner>/<name>/actions/variables/<NAME>
+            value = self.vars.get(f"{parts[1]}/{parts[2]}:{parts[5]}")
+            return None if value is None else {"name": parts[5], "value": value}
         if parts[3] == "actions":  # secret and variable lists, repo and organization level
             if getattr(self, "actions_forbidden", False):
                 raise pv.ProvisionError(f"gh api {path}: HTTP 403")
@@ -105,6 +110,13 @@ class FakeGH:
             self.repos.add(args[2])
         if args[:2] == ["label", "create"]:
             self.labels.add(f"{args[args.index('--repo') + 1]}:{args[2]}")
+        if args[:2] == ["variable", "set"]:
+            self.vars[f"{args[args.index('--repo') + 1]}:{args[2]}"] = args[args.index("--body") + 1]
+
+    def ls_remote(self, url, *refs):
+        self.lookups = getattr(self, "lookups", []) + [(url, refs)]  # a read: not in writes
+        tag = refs[0].rsplit("/", 1)[1]
+        return self.tags.get(tag, "")
 
     def git(self, args, cwd):
         self.writes.append(("git", args[0]))

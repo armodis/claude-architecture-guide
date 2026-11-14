@@ -1,0 +1,25 @@
+{
+  "version": "v0.2.0",
+  "blocks": [],
+  "owner": {
+    "login": "your-org",
+    "type": "organization",
+    "repos": [
+      {"name": "ops", "kind": "plain", "description": "Company-wide tooling and planning", "path": "~/work/your-org/ops"},
+      {"name": "your-product", "kind": "product", "description": "One sentence on the product", "path": "~/work/your-org/your-product",
+       "release": "tags"}
+    ],
+    "boards": [
+      {"name": "company", "title": "Strategic Portfolio", "repos": ["ops"],
+       "template": {"owner": "armodis-ai", "number": 6},
+       "themes": ["Strategy", "Product", "Engineering", "Operations", "Go to market", "Finance", "Legal and compliance", "People"],
+       "number": 1,
+       "hierarchy": ["Objective", "Key Result", "Initiative", "Milestone", "Epic", "User Story"],
+       "org_label": "Your Org"},
+      {"name": "your-product", "title": "Your Product", "repos": ["your-product"],
+       "template": {"owner": "armodis-ai", "number": 9},
+       "number": 2,
+       "hierarchy": ["Milestone", "Epic", "User Story"]}
+    ]
+  }
+}

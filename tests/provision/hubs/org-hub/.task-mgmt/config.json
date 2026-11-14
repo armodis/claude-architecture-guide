@@ -1,0 +1,18 @@
+{
+  "version": "v9.9.9",
+  "blocks": [],
+  "owner": {
+    "login": "example-org",
+    "type": "organization",
+    "repos": [{"name": "ops"}, {"name": "widget", "kind": "product", "release": "tags"}, {"name": "archive"}],
+    "boards": [
+      {"name": "company", "title": "Company", "repos": ["ops"], "template": {"owner": "armodis-ai", "number": 6},
+       "number": 1, "hierarchy": ["Objective", "Epic", "User Story"], "org_label": "Example Org",
+       "xref_fields": ["Source Org", "Target Org"]},
+      {"name": "widget", "title": "Widget", "repos": ["widget"], "template": {"owner": "armodis-ai", "number": 9},
+       "number": 2, "hierarchy": ["Milestone", "Epic", "User Story"], "outside_hierarchy": ["Bug"]},
+      {"name": "archive", "title": "Archive", "repos": ["archive"], "template": {"owner": "armodis-ai", "number": 9},
+       "number": 4, "hierarchy": ["Epic"], "read_only": true}
+    ]
+  }
+}
