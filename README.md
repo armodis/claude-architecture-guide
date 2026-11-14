@@ -55,7 +55,7 @@ What ships in this repo:
 - **[`template/`](template/)** — the scaffold `setup.sh` stows from: a universal `claude-user/.claude/` (with the design loop skill, its reviewer and verifier agents, and its compaction hook), example `work` and `personal` domain roots, and shell/git dotfiles (including directory-based git-identity routing). Copy it into your own dotfiles repo, or run in place.
 - **[`brief.html`](brief.html)** — a one-page visual overview of the whole architecture and the four concerns it addresses. View it rendered at **[armodis-ai.github.io/task-mgmt/brief.html](https://armodis-ai.github.io/task-mgmt/brief.html)** (GitHub Pages), or open the file locally.
 
-- **[`template/claude-restore/`](template/claude-restore/)** — `claude-restore` and `claude-provider` (into `~/.local/bin`): keep named Claude Code sessions alive across reboots in tmux, and move them between the Anthropic API and Amazon Bedrock. This folder is MIT licensed ([`LICENSE`](template/claude-restore/LICENSE)); the rest of the repo is CC BY 4.0 ([`LICENSE`](LICENSE)). See its [README](template/claude-restore/README.md).
+- **[`template/claude-restore/`](template/claude-restore/)** — `claude-restore` and `claude-provider` (into `~/.local/bin`): keep named Claude Code sessions alive across reboots in tmux, and move them between the Anthropic API and Amazon Bedrock. The MIT license covers `template/claude-restore/` ([`LICENSE`](template/claude-restore/.local/share/claude-restore/LICENSE)); the rest of the repo is CC BY 4.0 ([`LICENSE`](LICENSE)). See its [README](template/claude-restore/.local/share/claude-restore/README.md).
 - **[`AGENTS.md`](AGENTS.md)**, **[`STATUS.md`](STATUS.md)**, **[`docs/decisions/`](docs/decisions/)** — conventions for agents working on this repo, the handoff note they read first and update, and a home for decision records.
 
 ### Install a pinned release
@@ -64,7 +64,8 @@ Releases are git tags `vX.Y.Z`. To install one instead of a checkout:
 
 ```bash
 tag=v0.2.0
-sha=$(git ls-remote https://github.com/armodis-ai/task-mgmt "refs/tags/$tag^{}" | cut -f1)
+sha=$(git ls-remote https://github.com/armodis-ai/task-mgmt "refs/tags/$tag" "refs/tags/$tag^{}" | awk -v p="refs/tags/$tag^{}" '$2==p{x=$1}{a=$1}END{print x?x:a}')
+[ -n "$sha" ] || { echo "tag $tag not found" >&2; exit 1; }
 dir=~/.local/share/task-mgmt/$tag
 mkdir -p "$dir" && curl -fsSL "https://github.com/armodis-ai/task-mgmt/archive/$sha.tar.gz" | tar -xz --strip-components=1 -C "$dir"
 printf 'repo=armodis-ai/task-mgmt\nversion=%s\nsha=%s\n' "$tag" "$sha" > "$dir/.task-mgmt-release"

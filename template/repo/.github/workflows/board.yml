@@ -75,7 +75,7 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"
-            [[ "$PINNED" =~ ^[0-9a-f]{40}$ ]] || echo "::warning title=Board command not pinned::Set the BOARD_REF variable to a full guide commit SHA; this run takes ${PINNED:-main}, which can move."
+            [[ "$PINNED" =~ ^[0-9a-f]{40}$ ]] || echo "::warning title=Board command not pinned::Set the BOARD_REF variable to a full task-mgmt commit SHA; this run takes ${PINNED:-main}, which can move."
           fi
       - name: Install the board command
         if: steps.ready.outputs.go == 'true'

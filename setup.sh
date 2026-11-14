@@ -18,7 +18,7 @@
 # Usage:
 #   git clone https://github.com/armodis-ai/task-mgmt
 #   cd task-mgmt
-#   $EDITOR setup.sh          # edit the CONFIG block below
+#   $EDITOR substrate.conf
 #   ./setup.sh
 #   ./verify.sh
 
